@@ -8,8 +8,13 @@ Tech Stack:
 - Framework: LangChain
 """
 
-from langchain_ollama import OllamaLLM
-from langchain_core.prompts import ChatPromptTemplate
+import sys
+from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from models.ollama import get_model_response
 
 
 class QueryModel:
@@ -23,12 +28,6 @@ class QueryModel:
             model_name: The Ollama model to use
         """
         self.model_name = model_name
-        self.llm = OllamaLLM(model=model_name)
-        
-        # Create a simple prompt template
-        self.prompt_template = ChatPromptTemplate.from_template(
-            "You are a helpful AI assistant. Answer the following query:\n\n{query}"
-        )
     
     def query(self, user_query: str) -> str:
         """
@@ -40,11 +39,8 @@ class QueryModel:
         Returns:
             The model's response as a string
         """
-        # Create the chain
-        chain = self.prompt_template | self.llm
-        
-        # Invoke the chain with the user query
-        response = chain.invoke({"query": user_query})
+        # Use the model connection utility to get response
+        response = get_model_response(user_query, model_name=self.model_name)
         
         return response
     
@@ -81,7 +77,7 @@ def main():
     
     # Example queries
     example_queries = [
-        "What is Python?"
+        "What is India?"
         #,"Explain machine learning in simple terms."
         #,"How does an AI agent work?"
     ]

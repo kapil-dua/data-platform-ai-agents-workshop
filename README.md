@@ -5,27 +5,25 @@
 ai-agents-etl-poc/
 ├── README.md                   # Project documentation
 ├── requirements.txt            # Python dependencies
-├── .env.example                # Environment variables template
+├── app.py                      # Streamlit web interface
+├── config.py                   # Configuration settings
+├── .env.example                # Environment template
 ├── .env                        # Environment variables (local)
 ├── .gitignore                  # Git ignore file
-├── Version_compatibility.md    # Version compatibility information
-├── config/
-│   └── config.py               # Global configuration
+├── agents/
+│   ├── __init__.py
+│   ├── agents-readme.md        # Agents documentation
+│   ├── supervisor_agent.py     # Supervisor with LangGraph workflow
+│   ├── chat_agent.py           # Chat agent
+│   ├── monitor_agent.py        # AWS Glue job monitoring agent
+│   └── rca_agent.py            # Root cause analysis agent
+├── utils/
+│   ├── __init__.py
+│   ├── aws_utils.py            # AWS Glue/CloudWatch utilities
+│   └── llm_utils.py            # Groq LLM wrapper
 ├── infra/                      # Infrastructure files
-├── tests/                      # Test suite directory
-└── src/
-    ├── app.py                  # Streamlit web interface
-    ├── quickstart.md           # Quickstart guide
-    ├── agents/
-    │   ├── __init__.py
-    │   ├── supervisor_agent.py # Supervisor with LangGraph workflow
-    │   ├── monitor_agent.py    # AWS Glue job monitoring agent
-    │   ├── rca_agent.py        # Root cause analysis agent
-    │   └── chat_agent.py       # Chat agent for interactions
-    └── utils/
-        ├── __init__.py
-        ├── aws_utils.py        # AWS Glue/CloudWatch utilities
-        └── llm_utils.py        # Groq LLM wrapper
+├── tests/
+│   └── test_agents.py          # Agent tests
 ```
 
 ## Setup Instructions
