@@ -1,16 +1,23 @@
+# Note: All versions updated to latest as of April 2026
+# These versions are compatible with Python 3.12+
+
 # Core LangChain packages
 langchain==1.2.8
 langchain-core==1.2.8
 langchain-community==0.4.1
-langgraph==1.0.7
+langchain-ollama==1.0.0
+langchain-mcp-adapters==0.2.2
 langchain-groq==1.1.2
+langgraph==1.0.9
+ollama==0.6.1
+
 # AWS SDK
-boto3==1.42.40
-botocore==1.42.40
+boto3==1.42.96
+botocore==1.42.96
+
 # Web Framework
-streamlit==1.54.0
+streamlit==1.56.0
+
 # Utilities
-python-dotenv==1.0.1
-pydantic==2.10.5
-# Note: All versions updated to latest as of February 2026
-# These versions are compatible with Python 3.10+
+python-dotenv==1.2.2
+pydantic==2.13.3

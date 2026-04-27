@@ -1,33 +1,3 @@
-# Quick Start Guide
-
-## Setup Steps
-
-### 1. Install Dependencies
-```bash
-cd etl_monitoring_agent
-pip install -r requirements.txt
-```
-
-### 2. Configure Environment Variables
-```bash
-cp .env.example .env
-```
-
-Edit `.env` file with your credentials:
-```
-GROQ_API_KEY=your_actual_groq_api_key
-AWS_ACCESS_KEY_ID=your_actual_aws_access_key
-AWS_SECRET_ACCESS_KEY=your_actual_aws_secret_key
-AWS_REGION=us-east-1
-```
-
-### 3. Run the Application
-```bash
-streamlit run app.py
-```
-
-The application will open in your browser at `http://localhost:8501`
-
 ## How It Works
 
 ### Agent Workflow
