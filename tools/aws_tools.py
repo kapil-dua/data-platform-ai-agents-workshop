@@ -4,7 +4,7 @@ AWS utility functions for Glue job monitoring and log retrieval
 import boto3
 from typing import Dict, List, Optional
 from datetime import datetime
-from config.config import Config
+from config import Config
 
 
 class AWSGlueClient:

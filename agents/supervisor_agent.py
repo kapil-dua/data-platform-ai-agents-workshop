@@ -5,7 +5,7 @@ from typing import TypedDict, Literal
 from langgraph.graph import StateGraph, END
 from agents.monitor_agent import MonitorAgent
 from agents.rca_agent import RCAAgent
-from utils.llm_utils import LLMClient
+from models.llm_client import LLMClient
 
 
 class SupervisorState(TypedDict):
@@ -118,7 +118,7 @@ class SupervisorAgent:
         Create a comprehensive but concise report that includes:
         1. Overall status summary
         2. Key metrics
-        3. Critical issues and their root causes
+        3. Critical issues and their root causes - in a very short format
         4. Recommended actions
         
         Format the report in a clear, professional manner suitable for technical stakeholders."""

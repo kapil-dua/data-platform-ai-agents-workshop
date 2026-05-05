@@ -2,8 +2,8 @@
 RCA Agent - Performs Root Cause Analysis for failed ETL jobs
 """
 from typing import TypedDict
-from utils.aws_utils import AWSGlueClient
-from utils.llm_utils import LLMClient
+from tools.aws_tools import AWSGlueClient
+from models.llm_client import LLMClient
 
 
 class RCAAgentState(TypedDict):
@@ -67,8 +67,9 @@ class RCAAgent:
                 "severity": rca['severity']
             })
         
+        rca_summary = []
         # Create overall RCA summary
-        rca_summary = self._create_rca_summary(rca_results)
+        #rca_summary = self._create_rca_summary(rca_results)
         
         print(f"[{self.name}] RCA complete for all failed jobs.")
         
@@ -91,11 +92,11 @@ class RCAAgent:
         """
         system_prompt = """You are an expert data engineer performing root cause analysis on failed ETL jobs.
         Analyze the job information and logs to determine:
-        1. The root cause of the failure
+        1. The root cause of the job failure
         2. Specific recommendations to fix the issue
         3. Severity level (Critical, High, Medium, Low)
         
-        Provide your analysis in a structured format with clear, actionable insights."""
+        Provide your analysis in a structured format with clear, actionable insights, keep it concise and focused, Severity level summary less than 20 words."""
         
         user_message = f"""
         Job Name: {job_info['job_name']}
@@ -106,7 +107,7 @@ class RCAAgent:
         Job Logs:
         {logs[:3000]}  # Limit log size for LLM
         
-        Provide root cause analysis with recommendations.
+        Provide top root cause analysis with its recommendations.
         """
         
         llm_response = self.llm_client.invoke_with_prompt(
@@ -137,9 +138,9 @@ class RCAAgent:
         """Determine severity of the failure"""
         llm_lower = llm_response.lower()
         
-        if any(word in llm_lower for word in ['critical', 'severe', 'data loss', 'corruption']):
+        if any(word in llm_lower for word in ['critical', 'severe', 'corruption', 'blocking']):
             return "Critical"
-        elif any(word in llm_lower for word in ['high', 'important', 'blocking']):
+        elif any(word in llm_lower for word in ['high', 'important', 'data loss']):
             return "High"
         elif any(word in llm_lower for word in ['medium', 'moderate']):
             return "Medium"

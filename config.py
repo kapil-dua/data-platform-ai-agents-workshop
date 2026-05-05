@@ -11,9 +11,13 @@ load_dotenv()
 class Config:
     """Application configuration"""
     
+    MODEL_TO_USE = os.getenv("MODEL_TO_USE", "")
+
+    OLLAMA_MODEL_ID = os.getenv("OLLAMA_MODEL_ID", "")
+
     # Groq API settings
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-    GROQ_MODEL = "llama-3.1-8b-instant"
+    GROQ_MODEL_ID = os.getenv("GROQ_MODEL_ID", "")
     
     # AWS settings
     AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
@@ -21,7 +25,7 @@ class Config:
     AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
     
     # Application settings
-    REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", "300"))
+    REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", "30"))
     
     # Agent settings
     MAX_ITERATIONS = 10

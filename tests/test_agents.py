@@ -9,9 +9,9 @@ from pathlib import Path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from config.config import Config
+from config import Config
 from agents.supervisor_agent import SupervisorAgent
-from utils.aws_utils import AWSGlueClient
+from tools.aws_tools import AWSGlueClient
 
 
 def test_configuration():

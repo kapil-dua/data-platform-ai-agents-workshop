@@ -3,8 +3,8 @@ Monitor Agent - Monitors AWS Glue ETL job status
 """
 from typing import TypedDict, Annotated
 from langchain_core.messages import HumanMessage, SystemMessage
-from utils.aws_utils import AWSGlueClient
-from utils.llm_utils import LLMClient
+from tools.aws_tools import AWSGlueClient
+from models.llm_client import LLMClient
 
 
 class MonitorAgentState(TypedDict):
@@ -51,10 +51,10 @@ class MonitorAgent:
         - Any patterns or concerns you notice
         Keep the summary clear and actionable."""
         
-        llm_summary = self.llm_client.invoke_with_prompt(
-            system_message=system_prompt,
-            user_message=f"Analyze these job statuses:\n\n{jobs_summary}"
-        )
+        # llm_summary = self.llm_client.invoke_with_prompt(
+        #     system_message=system_prompt,
+        #     user_message=f"Analyze these job statuses:\n\n{jobs_summary}"
+        # )
         
         print(f"[{self.name}] Monitoring complete. Found {len(failed_jobs)} failed jobs.")
         
@@ -68,7 +68,8 @@ class MonitorAgent:
                 "running_count": len([j for j in all_jobs if j['status'] == 'RUNNING'])
             },
             "failed_jobs": failed_jobs,
-            "monitor_summary": llm_summary
+            #"monitor_summary": llm_summary
+            "monitor_summary": jobs_summary
         }
     
     def get_job_details(self, job_name: str) -> dict:

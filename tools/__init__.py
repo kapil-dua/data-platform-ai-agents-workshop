@@ -1,7 +1,6 @@
 """
 Utility modules for ETL monitoring application
 """
-from .aws_utils import AWSGlueClient
-from .llm_utils import LLMClient
+from .aws_tools import AWSGlueClient
 
-__all__ = ['AWSGlueClient', 'LLMClient']
+__all__ = ['AWSGlueClient']

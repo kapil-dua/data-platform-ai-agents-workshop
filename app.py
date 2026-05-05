@@ -4,9 +4,9 @@ Streamlit Web Interface for ETL Monitoring Application
 import streamlit as st
 import time
 from datetime import datetime
-from config.config import Config
+from config import Config
 from agents.supervisor_agent import SupervisorAgent
-from utils.aws_utils import AWSGlueClient
+from tools.aws_tools import AWSGlueClient
 
 
 # Page configuration
@@ -17,6 +17,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+MODEL_ID = Config.OLLAMA_MODEL_ID if Config.MODEL_TO_USE == "ollama" else Config.GROQ_MODEL_ID if Config.MODEL_TO_USE == "groq" else "None"
 
 def initialize_session_state():
     """Initialize session state variables"""
@@ -67,7 +68,7 @@ def display_header():
     with col3:
         st.metric(
             label="🔧 LLM Model",
-            value=Config.GROQ_MODEL
+            value=MODEL_ID
         )
 
 
@@ -134,7 +135,7 @@ def display_sidebar():
         # System info
         st.subheader("ℹ️ System Info")
         st.text(f"Region: {Config.AWS_REGION}")
-        st.text(f"Model: {Config.GROQ_MODEL}")
+        st.text(f"Model: {Config.MODEL_TO_USE} ({MODEL_ID})")
 
 
 def run_monitoring():
@@ -227,9 +228,21 @@ def display_results():
     st.markdown("---")
     
     # Monitor Summary
-    st.subheader("🔍 Monitor Agent Summary")
-    monitor_summary = results.get('monitor_summary', 'No summary available')
-    st.info(monitor_summary)
+    st.subheader("🔍 Monitor Agent Result")
+    #monitor_summary = results.get('monitor_summary', 'No summary available')
+    # monitor_summary = results.get('jobs_data', 'No summary available')
+    # st.info(monitor_summary)
+
+    # Jobs Data Table
+    jobs_data = results.get('jobs_data', {})
+    
+    if 'all_jobs' in jobs_data and jobs_data['all_jobs']:
+        # Convert jobs list to table format
+        import pandas as pd
+        jobs_df = pd.DataFrame(jobs_data['all_jobs'])
+        st.dataframe(jobs_df, use_container_width=True)
+    else:
+        st.info("No job details available")
     
     st.markdown("---")
     
@@ -237,17 +250,17 @@ def display_results():
     rca_results = results.get('rca_results', [])
     
     if rca_results:
-        st.subheader("🔧 Root Cause Analysis")
+        # st.subheader("🔧 Root Cause Analysis")
         
-        # RCA Summary
-        rca_summary = results.get('rca_summary', '')
-        if rca_summary:
-            st.warning(rca_summary)
-        
-        st.markdown("---")
+        # # RCA Summary
+        # rca_summary = results.get('rca_summary', '')
+        # if rca_summary:
+        #     st.warning(rca_summary)
+
+        # st.markdown("---")
         
         # Detailed RCA for each failed job
-        st.subheader("📋 Detailed Analysis")
+        st.subheader("📋 RCA Agent Result")
         
         for idx, rca in enumerate(rca_results):
             with st.expander(f"❌ {rca['job_name']} - {rca['severity']} Severity", expanded=(idx == 0)):
@@ -258,7 +271,7 @@ def display_results():
                     st.text(f"Run ID: {rca['run_id']}")
                     st.text(f"Severity: {rca['severity']}")
                     if rca['error_message']:
-                        st.text(f"Error: {rca['error_message'][:100]}...")
+                        st.text(f"Error: {rca['error_message'][:200]}...")
                 
                 with col2:
                     st.write("**Root Cause:**")
@@ -274,7 +287,7 @@ def display_results():
     st.markdown("---")
     
     # Final Report
-    st.subheader("📄 Executive Report")
+    st.subheader("📄 Summary Report")
     final_report = results.get('final_report', 'No report available')
     st.markdown(final_report)
     
