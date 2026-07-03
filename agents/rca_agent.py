@@ -90,13 +90,13 @@ class RCAAgent:
         Returns:
             Dictionary with RCA findings
         """
-        system_prompt = """You are an expert data engineer performing root cause analysis on failed ETL jobs.
-        Analyze the job information and logs to determine:
-        1. The root cause of the job failure
-        2. Specific recommendations to fix the issue
-        3. Severity level (Critical, High, Medium, Low)
+        rca_generation_prompt = """You are an expert data engineer performing root cause analysis on failed ETL jobs.
+        Analyze the job failure information and logs to determine:
+        1. The root cause - Brief explanation of why the job failed (2-3 sentences)
+        2. Specific recommendation - Actionable steps to prevent this failure in the future
+        3. Suggest Issue Severity level like Critical, High, Medium, Low
         
-        Provide your analysis in a structured format with clear, actionable insights, keep it concise and focused, Severity level summary less than 20 words."""
+        Provide your RCA analysis in a structured format with concise info and focused, Severity level summary less than 20 words."""
         
         user_message = f"""
         Job Name: {job_info['job_name']}
@@ -106,12 +106,10 @@ class RCAAgent:
         
         Job Logs:
         {logs[:3000]}  # Limit log size for LLM
-        
-        Provide top root cause analysis with its recommendations.
         """
         
         llm_response = self.llm_client.invoke_with_prompt(
-            system_message=system_prompt,
+            system_message=rca_generation_prompt,
             user_message=user_message
         )
         

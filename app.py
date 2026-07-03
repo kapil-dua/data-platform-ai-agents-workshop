@@ -44,7 +44,7 @@ def validate_configuration():
 
 def display_header():
     """Display application header"""
-    st.title("🔍 Multi-Agent ETL Monitoring Dashboard")
+    st.title("🔍 ETL Data Platform: AI Agents")
     st.markdown("---")
     
     col1, col2, col3 = st.columns(3)
@@ -59,11 +59,11 @@ def display_header():
     with col2:
         if st.session_state.last_run_time:
             st.metric(
-                label="⏱️ Last Run",
-                value=st.session_state.last_run_time.strftime("%H:%M:%S")
+                label="⏱️ Last Run (UTC)",
+                value=st.session_state.last_run_time.strftime("%Y-%m-%d %H:%M:%S")
             )
         else:
-            st.metric(label="⏱️ Last Run", value="Never")
+            st.metric(label="⏱️ Last Run (UTC)", value="Never")
     
     with col3:
         st.metric(
@@ -119,7 +119,7 @@ def display_sidebar():
         with st.expander("Monitor Agent", expanded=False):
             st.write("**Role:** Job Status Monitoring")
             st.write("**Tasks:**")
-            st.write("- Tracks AWS Glue job runs")
+            st.write("- Tracks Configured job runs")
             st.write("- Identifies failed jobs")
             st.write("- Summarizes job statistics")
         
@@ -159,9 +159,9 @@ def run_monitoring():
         # Execute workflow
         results = supervisor.run_monitoring_workflow()
         
-        status_text.text("📝 Supervisor Agent: Generating final report...")
-        progress_bar.progress(100)
-        time.sleep(0.5)
+        # status_text.text("📝 Supervisor Agent: Generating final report...")
+        # progress_bar.progress(100)
+        # time.sleep(0.5)
         
         # Clear progress indicators
         progress_bar.empty()
@@ -188,7 +188,7 @@ def display_results():
     results = st.session_state.results
     
     # Overall metrics
-    st.subheader("📊 Job Status Overview")
+    st.subheader("📊 Jobs Monitoring Status")
     
     jobs_data = results.get('jobs_data', {})
     
@@ -228,7 +228,7 @@ def display_results():
     st.markdown("---")
     
     # Monitor Summary
-    st.subheader("🔍 Monitor Agent Result")
+    st.subheader("🔍 Monitor Agent - Result")
     #monitor_summary = results.get('monitor_summary', 'No summary available')
     # monitor_summary = results.get('jobs_data', 'No summary available')
     # st.info(monitor_summary)
@@ -260,7 +260,7 @@ def display_results():
         # st.markdown("---")
         
         # Detailed RCA for each failed job
-        st.subheader("📋 RCA Agent Result")
+        st.subheader("📋 RCA Agent - Result")
         
         for idx, rca in enumerate(rca_results):
             with st.expander(f"❌ {rca['job_name']} - {rca['severity']} Severity", expanded=(idx == 0)):
@@ -285,19 +285,6 @@ def display_results():
         st.success("✅ No failed jobs detected. All systems operational!")
     
     st.markdown("---")
-    
-    # Final Report
-    st.subheader("📄 Summary Report")
-    final_report = results.get('final_report', 'No report available')
-    st.markdown(final_report)
-    
-    # Download report option
-    st.download_button(
-        label="📥 Download Full Report",
-        data=final_report,
-        file_name=f"etl_monitoring_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-        mime="text/plain"
-    )
 
 
 def main():

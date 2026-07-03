@@ -112,11 +112,6 @@ def test_supervisor_workflow():
             for rca in rca_results[:2]:  # Show first 2
                 print(f"  - {rca['job_name']}: {rca['severity']} severity")
         
-        print("\n" + "=" * 60)
-        print("Final Report:")
-        print("=" * 60)
-        print(results.get('final_report', 'N/A'))
-        
         return True
     except Exception as e:
         print(f"❌ Workflow error: {e}")
