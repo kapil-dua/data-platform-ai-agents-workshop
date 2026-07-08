@@ -134,8 +134,19 @@ def display_sidebar():
         
         # System info
         st.subheader("ℹ️ System Info")
-        st.text(f"Region: {Config.AWS_REGION}")
+        st.text(f"AWS Region: {Config.AWS_REGION}")
         st.text(f"Model: {Config.MODEL_TO_USE} ({MODEL_ID})")
+        
+        # Observability info
+        st.markdown("---")
+        st.subheader("📊 Observability")
+        if Config.LANGFUSE_ENABLED:
+            st.success("✅ Langfuse Tracing Enabled")
+            st.caption("All agent execution traces are being captured")
+            if st.button("🔗 View Traces in Langfuse"):
+                st.info(f"Go to: {Config.LANGFUSE_HOST}")
+        else:
+            st.info("⚪ Langfuse Tracing Disabled")
 
 
 def run_monitoring():

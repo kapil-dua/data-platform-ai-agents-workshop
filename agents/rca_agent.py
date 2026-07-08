@@ -25,59 +25,63 @@ class RCAAgent:
     def analyze_failed_jobs(self, state: dict) -> dict:
         """
         Perform RCA on all failed jobs
-        
+
         Args:
             state: Current agent state containing failed jobs
-            
+
         Returns:
             Updated state with RCA results
         """
-        failed_jobs = state.get("failed_jobs", [])
-        
-        if not failed_jobs:
-            print(f"[{self.name}] No failed jobs to analyze.")
+        try:
+            failed_jobs = state.get("failed_jobs", [])
+
+            if not failed_jobs:
+                print(f"[{self.name}] No failed jobs to analyze.")
+                return {
+                    **state,
+                    "rca_results": []
+                }
+
+            print(f"[{self.name}] Analyzing {len(failed_jobs)} failed jobs...")
+
+            rca_results = []
+
+            for job in failed_jobs:
+                job_name = job['job_name']
+                run_id = job['run_id']
+
+                print(f"[{self.name}] Analyzing {job_name} (Run: {run_id})...")
+
+                try:
+                    # Get job logs
+                    logs = self.aws_client.get_job_logs(job_name, run_id)
+
+                    # Perform RCA using LLM
+                    rca = self._perform_rca(job, logs)
+
+                    rca_result = {
+                        "job_name": job_name,
+                        "run_id": run_id,
+                        "error_message": job.get('error_message', 'N/A'),
+                        "root_cause": rca['root_cause'],
+                        "recommendations": rca['recommendations'],
+                        "severity": rca['severity'],
+                    }
+
+                    rca_results.append(rca_result)
+
+                except Exception as e:
+                    raise
+
+            print(f"[{self.name}] RCA complete for all failed jobs.")
+
             return {
                 **state,
-                "rca_results": [],
-                "rca_summary": "No failed jobs found. All jobs are running successfully!"
+                "rca_results": rca_results,
             }
-        
-        print(f"[{self.name}] Analyzing {len(failed_jobs)} failed jobs...")
-        
-        rca_results = []
-        
-        for job in failed_jobs:
-            job_name = job['job_name']
-            run_id = job['run_id']
-            
-            print(f"[{self.name}] Analyzing {job_name} (Run: {run_id})...")
-            
-            # Get job logs
-            logs = self.aws_client.get_job_logs(job_name, run_id)
-            
-            # Perform RCA using LLM
-            rca = self._perform_rca(job, logs)
-            
-            rca_results.append({
-                "job_name": job_name,
-                "run_id": run_id,
-                "error_message": job.get('error_message', 'N/A'),
-                "root_cause": rca['root_cause'],
-                "recommendations": rca['recommendations'],
-                "severity": rca['severity']
-            })
-        
-        rca_summary = []
-        # Create overall RCA summary
-        #rca_summary = self._create_rca_summary(rca_results)
-        
-        print(f"[{self.name}] RCA complete for all failed jobs.")
-        
-        return {
-            **state,
-            "rca_results": rca_results,
-            "rca_summary": rca_summary
-        }
+
+        except Exception as e:
+            raise
     
     def _perform_rca(self, job_info: dict, logs: str) -> dict:
         """
@@ -145,20 +149,3 @@ class RCAAgent:
         else:
             return "Low"
     
-    def _create_rca_summary(self, rca_results: list) -> str:
-        """Create an overall summary of all RCA findings"""
-        system_prompt = """You are summarizing multiple root cause analyses for failed ETL jobs.
-        Create a concise executive summary that highlights:
-        - Total number of failures analyzed
-        - Common patterns or root causes
-        - Priority recommendations
-        - Overall system health assessment"""
-        
-        user_message = f"Summarize these RCA findings:\n\n{str(rca_results)}"
-        
-        summary = self.llm_client.invoke_with_prompt(
-            system_message=system_prompt,
-            user_message=user_message
-        )
-        
-        return summary

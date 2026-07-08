@@ -1,12 +1,14 @@
 ---
-description: "Guidelines for developing the Agentic Data Operations application with multi-agent ETL monitoring, LangGraph workflows, AWS integration, and state management patterns."
+description: "Guidelines for developing the Agentic Data Operations application with multi-agent ETL monitoring, using LangGraph workflows."
 ---
 
-# Copilot Instructions: Agentic Data Operations Application
+# Token Minimization Guidelines
+Strictly use minimum input and output tokens for all agents. Avoid unnecessary verbosity in prompts and responses. Use concise language and structured data formats (e.g., JSON, TypedDict) to reduce token usage.
+
 
 ## Project Overview
 
-This is a **Multi-Agent ETL Monitoring Application** designed to perform data platform operations using Agentic AI. The system coordinates multiple specialized agents to monitor ETL jobs, perform root cause analysis (RCA), and create incidents.
+This is a **Multi-Agent ETL Monitoring Application** designed to perform data platform operations using Agentic AI. The system coordinates multiple specialized agents like monitor ETL jobs, perform root cause analysis (RCA), and create incidents.
 
 ### Core Agents
 
@@ -22,41 +24,14 @@ This is a **Multi-Agent ETL Monitoring Application** designed to perform data pl
 ### Multi-Agent Orchestration
 
 - Use **LangGraph** (`StateGraph`) for all agent workflows
-- Define agent states using `TypedDict` for type safety and clarity
 - Follow the **Supervisor pattern**: one coordinator agent manages task distribution to specialized agents
-- Use explicit state transitions with conditional routing via `add_conditional_edges()`
+- For langraph workflows, follow skills and patterns defined in `data-ops-ai-agents/.github/skills/langgraph-agents/SKILL.md`
 
-**Example Pattern:**
-```python
-from typing import TypedDict, Literal
-from langgraph.graph import StateGraph, END
-
-class AgentState(TypedDict):
-    """Typed state for the agent workflow"""
-    task: str
-    data: dict
-    results: list
-    next_agent: str
-
-workflow = StateGraph(AgentState)
-workflow.add_node("agent_name", node_function)
-workflow.add_conditional_edges("agent_name", routing_function)
-```
-
-### Agent Structure
-
-Each agent should:
-- Inherit from a base `Agent` class or follow the same interface
-- Define a clear `name` and `description`
-- Implement a `run()` or `execute()` method for task execution
-- Return structured results matching the state schema
 
 ### Configuration-Driven Design
 
 - All environment variables and settings go in `config.py` using the `Config` class
 - Use `pydantic` for validating configuration objects
-- Support multiple LLM backends (Groq, Ollama) via `MODEL_TO_USE` config
-- Validate all required credentials at startup via `Config.validate()`
 
 ---
 
@@ -74,57 +49,11 @@ Each agent should:
 
 - Wrap agent operations in try-except blocks with meaningful error messages
 - Log agent decisions and state transitions (use `logging` module)
-- Return error states in agent results, don't raise exceptions silently
-- Include context in error messages (job ID, agent name, timestamp)
 
 ### Tool Development
 
 When creating tools for agents (e.g., `aws_utils.py`, `llm_utils.py`):
 - Each tool should be a utility class or function set with clear purpose
-- Document AWS service dependencies (Glue, CloudWatch, etc.)
-- Use boto3 with proper session/credential management via `config.py`
-- Handle AWS API rate limits and transient failures gracefully
-
----
-
-## AWS Integration Guidelines
-
-### Service Usage
-
-- **AWS Glue**: Job definitions, runs, and metrics
-- **CloudWatch**: Job logs and performance metrics
-- **Secrets Manager** (optional): Manage sensitive credentials
-
----
-
-## Agent Development Checklist
-
-When adding or modifying agents:
-
-1. **State Management**
-   - Define `AgentState` using `TypedDict`
-   - Include all fields needed for workflow routing
-   - Document each field's purpose
-
-2. **Initialization**
-   - Set `name` and `description` attributes
-   - Initialize required tools/clients (AWS, LLM, etc.)
-   - Validate configuration in `__init__` if needed
-
-3. **Workflow Integration**
-   - Create workflow nodes with clear function signatures
-   - Use `StateGraph` to define the graph structure
-   - Test edge cases and conditional routing
-
-4. **Tool Usage**
-   - Use existing tools from `tools/` directory
-   - Create tools for new AWS or external service integrations
-   - Follow the `AWSGlueClient` pattern for reusability
-
-5. **Testing**
-   - Add unit tests in `tests/test_agents.py`
-   - Mock AWS calls for unit tests
-   - Test state transitions and error paths
 
 ---
 

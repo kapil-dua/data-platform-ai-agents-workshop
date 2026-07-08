@@ -2,11 +2,13 @@
 Supervisor Agent - Coordinates workflow between monitor and RCA agents
 """
 from typing import TypedDict, Literal
+from datetime import datetime
 from langgraph.graph import StateGraph, END
 from agents.monitor_agent import MonitorAgent
 from agents.rca_agent import RCAAgent
 from models.llm_client import LLMClient
-from langfuse.langchain import CallbackHandler
+from utils.langfuse_tracing import get_agent_handler, generate_session_id
+from config import Config
 
 
 class SupervisorState(TypedDict):
@@ -16,7 +18,6 @@ class SupervisorState(TypedDict):
     failed_jobs: list
     monitor_summary: str
     rca_results: list
-    rca_summary: str
     next_agent: str
 
 
@@ -65,7 +66,7 @@ class SupervisorAgent:
     
     def _supervisor_node(self, state: SupervisorState) -> SupervisorState:
         """Supervisor decision node"""
-        print(f"\n[{self.name}] Starting ETL monitoring workflow...")
+        print(f"\n[{self.name}] Starting Supervisor Node...")
         print(f"[{self.name}] Task: {state.get('task', 'Monitor all ETL jobs')}")
         
         return {
@@ -94,13 +95,14 @@ class SupervisorAgent:
         else:
             return "end"
     
-    def run_monitoring_workflow(self, task: str = "Monitor all ETL jobs") -> dict:
+    def run_monitoring_workflow(self, task: str = "Monitor all ETL jobs", session_id: str = None) -> dict:
         """
-        Run the complete monitoring workflow
-        
+        Run the complete monitoring workflow with Langfuse tracing
+
         Args:
             task: Description of monitoring task
-            
+            session_id: Optional session ID for trace grouping
+
         Returns:
             Final state with all results
         """
@@ -110,21 +112,79 @@ class SupervisorAgent:
             "failed_jobs": [],
             "monitor_summary": "",
             "rca_results": [],
-            "rca_summary": "",
             "next_agent": "monitor"
         }
-        
-        # Initialize Langfuse CallbackHandler for LangGraph/Langchain (tracing)
-        langfuse_handler = CallbackHandler()
 
-        # Execute workflow
+        # Generate session ID if not provided
+        if not session_id:
+            session_id = generate_session_id(prefix="etl_monitoring")
 
-        # final_state = self.workflow.invoke(initial_state)
-        final_state = self.workflow.invoke(
-            input=initial_state,
-            config={"callbacks": [langfuse_handler]}
+        try:
+            print(f"\n[{self.name}] Starting ETL monitoring workflow...")
+            print(f"[{self.name}] Task: {task}")
+            print(f"[{self.name}] Session ID: {session_id}")
+
+            trace_tags = ["workflow_orchestration", self.name.lower().replace(" ", "_")]
+            trace_metadata = {
+                "langfuse_session_id": session_id,
+                "langfuse_trace_name": f"{self.name}: {task}",
+            }
+
+            # Get Langfuse callback handler for tracing
+            langfuse_handler = get_agent_handler(
+                agent_name=self.name,
+                session_id=session_id,
+                additional_tags=["workflow_orchestration"]
             )
-        
-        print(f"\n[{self.name}] Workflow complete!")
-        
-        return final_state
+
+            # Debug: verify handler was created for the workflow run
+            if langfuse_handler and Config.LANGFUSE_ENABLED:
+                print(f"[{self.name}] ✅ Langfuse handler created for session metadata: {session_id}")
+            
+            # Build callback list
+            callbacks = []
+            if langfuse_handler:
+                callbacks.append(langfuse_handler)
+
+            # Execute workflow
+            final_state = self.workflow.invoke(
+                input=initial_state,
+                config={
+                    "callbacks": callbacks,
+                    "metadata": trace_metadata,
+                    "tags": trace_tags,
+                } if callbacks else {
+                    "metadata": trace_metadata,
+                    "tags": trace_tags,
+                }
+            )
+
+            print(f"\n[{self.name}] Workflow complete!")
+
+            # Flush Langfuse traces to ensure they're sent
+            if langfuse_handler and Config.LANGFUSE_ENABLED:
+                try:
+                    from langfuse import Langfuse
+                    client = Langfuse(
+                        public_key=Config.LANGFUSE_PUBLIC_KEY,
+                        secret_key=Config.LANGFUSE_SECRET_KEY,
+                        host=Config.LANGFUSE_HOST
+                    )
+                    client.flush()
+                    
+                    # Extract trace ID from handler if available
+                    if hasattr(langfuse_handler, 'last_trace_id') and langfuse_handler.last_trace_id:
+                        trace_id = langfuse_handler.last_trace_id
+                        print(f"[{self.name}] ✅ Traces recorded successfully")
+                        print(f"[{self.name}] Trace ID: {trace_id}")
+                    else:
+                        print(f"[{self.name}] ✅ Traces flushed to Langfuse")
+                    
+                except Exception as flush_error:
+                    print(f"[{self.name}] Warning: Traces sent but could not retrieve trace URL: {flush_error}")
+
+
+            return final_state
+
+        except Exception as e:
+            raise

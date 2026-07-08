@@ -19,6 +19,10 @@ class LLMClient:
             from models.groq import GroqClient
             self._client = GroqClient()
             self.llm = self._client.get_llm()
+        elif self.MODEL_TO_USE == "databricks":
+            from models.databricks import DatabricksClient
+            self._client = DatabricksClient()
+            self.llm = self._client.get_llm()
         else:
             raise ValueError(f"Unknown model: {self.MODEL_TO_USE}")
     

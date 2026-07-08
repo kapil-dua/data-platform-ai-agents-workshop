@@ -27,50 +27,45 @@ class MonitorAgent:
     def monitor_jobs(self, state: dict) -> dict:
         """
         Monitor all AWS Glue jobs and return their status
-        
+
         Args:
             state: Current agent state
-            
+
         Returns:
             Updated state with monitoring results
         """
-        print(f"[{self.name}] Starting job monitoring...")
-        
-        # Get all jobs status
-        all_jobs = self.aws_client.get_all_jobs_status()
-        failed_jobs = [job for job in all_jobs if job['status'] == 'FAILED']
-        
-        # Format data for LLM analysis
-        jobs_summary = self.aws_client.format_job_status_summary(all_jobs)
-        
-        # Use LLM to create intelligent summary
-        system_prompt = """You are a monitoring agent analyzing AWS Glue ETL jobs.
-        Provide a concise summary of the job statuses, highlighting:
-        - Total number of jobs
-        - Number of successful, failed, and running jobs
-        - Any patterns or concerns you notice
-        Keep the summary clear and actionable."""
-        
-        # llm_summary = self.llm_client.invoke_with_prompt(
-        #     system_message=system_prompt,
-        #     user_message=f"Analyze these job statuses:\n\n{jobs_summary}"
-        # )
-        
-        print(f"[{self.name}] Monitoring complete. Found {len(failed_jobs)} failed jobs.")
-        
-        return {
-            **state,
-            "jobs_data": {
-                "all_jobs": all_jobs,
+        try:
+            print(f"[{self.name}] Starting job monitoring...")
+
+            # Get all jobs status
+            all_jobs = self.aws_client.get_all_jobs_status()
+            failed_jobs = [job for job in all_jobs if job['status'] == 'FAILED']
+
+            # Format data for LLM analysis
+            jobs_summary = self.aws_client.format_job_status_summary(all_jobs)
+
+            # Log monitoring results
+            monitoring_stats = {
                 "total_jobs": len(all_jobs),
                 "failed_count": len(failed_jobs),
                 "successful_count": len([j for j in all_jobs if j['status'] == 'SUCCEEDED']),
-                "running_count": len([j for j in all_jobs if j['status'] == 'RUNNING'])
-            },
-            "failed_jobs": failed_jobs,
-            #"monitor_summary": llm_summary
-            "monitor_summary": jobs_summary
-        }
+                "running_count": len([j for j in all_jobs if j['status'] == 'RUNNING']),
+            }
+
+            print(f"[{self.name}] Monitoring complete. Found {len(failed_jobs)} failed jobs.")
+
+            return {
+                **state,
+                "jobs_data": {
+                    "all_jobs": all_jobs,
+                    **monitoring_stats
+                },
+                "failed_jobs": failed_jobs,
+                "monitor_summary": jobs_summary
+            }
+
+        except Exception as e:
+            raise
     
     def get_job_details(self, job_name: str) -> dict:
         """Get detailed information about a specific job"""
