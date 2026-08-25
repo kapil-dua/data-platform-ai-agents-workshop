@@ -1,10 +1,15 @@
 """
-Utils package for ETL Monitoring Application
+Utils package for Data Platform AI Agents Application
 """
 
-from utils.langfuse_tracing import get_langfuse_handler, get_agent_handler
+from utils.langfuse_tracing import (
+    get_langfuse_handler,
+    get_agent_handler,
+    get_prompt_and_template,
+)
 
 __all__ = [
     "get_langfuse_handler",
     "get_agent_handler",
+    "get_prompt_and_template",
 ]

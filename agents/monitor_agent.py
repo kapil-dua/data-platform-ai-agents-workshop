@@ -1,5 +1,5 @@
 """
-Monitor Agent - Monitors AWS Glue ETL job status
+Monitor Agent - Monitors Data Platform ETL job status
 """
 from typing import TypedDict, Annotated
 from langchain_core.messages import HumanMessage, SystemMessage

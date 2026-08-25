@@ -1,5 +1,5 @@
 """
-Configuration module for ETL Monitoring Application
+Configuration module for Data Platform AI Agents Application
 """
 import os
 from dotenv import load_dotenv
@@ -16,6 +16,20 @@ class Config:
     
     # Agent settings
     MAX_ITERATIONS = 10
+    _FALLBACK_RCA_SYSTEM_PROMPT = """You are an expert data engineer performing root cause analysis on failed ETL jobs.
+Analyze the job failure information and logs to determine:
+1. The root cause - Brief explanation of why the job failed (2-3 sentences)
+2. Specific recommendation - Actionable steps to prevent this failure in the future
+3. Suggest Issue Severity level like Critical, High, Medium, Low
+
+Provide your RCA analysis in a structured format with concise info and focused, Severity level summary less than 20 words."""
+    _FALLBACK_RCA_USER_TEMPLATE = (
+        "Job Name: {job_name}\n"
+        "Run ID: {run_id}\n"
+        "Status: {status}\n"
+        "Error Message: {error_message}\n\n"
+        "Job Logs:\n{logs}"
+    )
 
     # AWS settings
     AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")

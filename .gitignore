@@ -41,3 +41,7 @@ Thumbs.db
 
 # Docker
 .docker/
+
+# Coding Assistants
+.github/
+.cursor/

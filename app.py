@@ -1,17 +1,16 @@
 """
-Streamlit Web Interface for ETL Monitoring Application
+Streamlit Web Interface for Data Platform AI Agents
 """
 import streamlit as st
 import time
 from datetime import datetime
 from config import Config
 from agents.supervisor_agent import SupervisorAgent
-from tools.aws_tools import AWSGlueClient
 
 
 # Page configuration
 st.set_page_config(
-    page_title="ETL Job Monitoring Dashboard",
+    page_title="Data Platform AI Agents",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -44,7 +43,7 @@ def validate_configuration():
 
 def display_header():
     """Display application header"""
-    st.title("🔍 ETL Data Platform: AI Agents")
+    st.title("🔍 Data Engineering Platform: AI Agents")
     st.markdown("---")
     
     col1, col2, col3 = st.columns(3)

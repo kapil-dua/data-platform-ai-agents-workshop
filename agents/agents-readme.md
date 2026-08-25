@@ -17,7 +17,7 @@
 ## Project Structure Explained
 
 ```
-etl_monitoring/
+data-ops-ai-agents/
 ├── app.py                      # Streamlit web interface
 ├── config/
 │   └── config.py               # Configuration management

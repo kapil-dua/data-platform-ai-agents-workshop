@@ -2,13 +2,14 @@
 Langfuse Tracing Utility Module
 
 Provides simple helper functions for integrating Langfuse observability
-with LangChain/LangGraph using CallbackHandler.
+with LangChain/LangGraph using CallbackHandler, and for pulling prompts
+from Langfuse Prompt Management with automatic trace linking.
 """
-from typing import Optional, Dict, Any, List
-import os
+from typing import Optional, Dict, Any, List, Tuple, Sequence, Union
 from datetime import datetime
 import uuid
 
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langfuse.langchain import CallbackHandler
 from langfuse import Langfuse
 
@@ -55,7 +56,6 @@ def get_langfuse_handler(
     Create a Langfuse CallbackHandler for LangChain integration
 
     Args:
-        session_id: Session ID to group related traces
         user_id: User identifier for tracing
         tags: List of tags for filtering and organization
         metadata: Custom metadata dictionary
@@ -148,38 +148,105 @@ def get_agent_handler(
     )
 
 
-def verify_langfuse_connection() -> bool:
-    """
-    Verify Langfuse connection and credentials
-    
-    Returns:
-        True if connection is successful, False otherwise
-    """
+_LANGFUSE_CLIENT: Optional[Langfuse] = None
+
+
+def _get_langfuse_client() -> Optional[Langfuse]:
+    """Return a cached Langfuse client, or ``None`` if the SDK is disabled/misconfigured."""
+    global _LANGFUSE_CLIENT
+
     if not Config.LANGFUSE_ENABLED:
-        print("⚪ Langfuse is disabled")
-        return True
-    
-    try:
-        from langfuse import Langfuse
-        
-        client = Langfuse(
-            public_key=Config.LANGFUSE_PUBLIC_KEY,
-            secret_key=Config.LANGFUSE_SECRET_KEY,
-            host=Config.LANGFUSE_HOST
+        return None
+    if not Config.LANGFUSE_PUBLIC_KEY or not Config.LANGFUSE_SECRET_KEY:
+        return None
+
+    if _LANGFUSE_CLIENT is None:
+        try:
+            _LANGFUSE_CLIENT = Langfuse(
+                public_key=Config.LANGFUSE_PUBLIC_KEY,
+                secret_key=Config.LANGFUSE_SECRET_KEY,
+                host=Config.LANGFUSE_HOST,
+            )
+        except Exception as e:
+            print(f"⚠️  Could not initialize Langfuse client: {e}")
+            _LANGFUSE_CLIENT = None
+
+    return _LANGFUSE_CLIENT
+
+
+def get_prompt_and_template(
+    name: str,
+    prompt_type: str = "text",
+    label: str = "production",
+    fallback_template: Optional[str] = None,
+    fallback_messages: Optional[Sequence[Tuple[str, str]]] = None,
+) -> Tuple[Optional[Any], Union[PromptTemplate, ChatPromptTemplate]]:
+    """
+    Fetch a prompt from Langfuse and wrap it in a LangChain template linked
+    to the Langfuse prompt version for tracing.
+
+    Follows the pattern documented at
+    https://langfuse.com/docs/prompt-management/features/link-to-traces
+    (LangChain Python) — passing ``metadata={"langfuse_prompt": ...}`` on
+    the PromptTemplate lets the ``langfuse.langchain.CallbackHandler``
+    associate every generation produced through the template with the
+    correct prompt name and version in Langfuse.
+
+    Args:
+        name: Prompt name in Langfuse (e.g. ``"job-failure-rca-analysis"``).
+        prompt_type: ``"text"`` or ``"chat"``.
+        label: Which Langfuse label to fetch. Defaults to ``"production"``.
+        fallback_template: LangChain template string used when Langfuse is
+            unavailable and ``prompt_type == "text"``. Uses single-brace
+            ``{var}`` LangChain syntax.
+        fallback_messages: List of ``(role, template)`` tuples used when
+            Langfuse is unavailable and ``prompt_type == "chat"``. Uses
+            single-brace ``{var}`` LangChain syntax.
+
+    Returns:
+        Tuple of ``(langfuse_prompt, langchain_template)``. The first item
+        is ``None`` when Langfuse is disabled or the fetch fails; in that
+        case ``langchain_template`` is built from the fallback and no
+        trace linking will occur (as documented for fallback prompts).
+    """
+    client = _get_langfuse_client()
+
+    if client is not None:
+        try:
+            langfuse_prompt = client.get_prompt(name, label=label, type=prompt_type)
+
+            if prompt_type == "chat":
+                template = ChatPromptTemplate(
+                    langfuse_prompt.get_langchain_prompt(),
+                    metadata={"langfuse_prompt": langfuse_prompt},
+                )
+            else:
+                template = PromptTemplate.from_template(
+                    langfuse_prompt.get_langchain_prompt(),
+                    metadata={"langfuse_prompt": langfuse_prompt},
+                )
+
+            print(
+                f"✅ Loaded Langfuse prompt '{name}' "
+                f"(version={langfuse_prompt.version}, label={label})"
+            )
+            return langfuse_prompt, template
+        except Exception as e:
+            print(
+                f"⚠️  Falling back to hardcoded template for prompt '{name}' — "
+                f"could not fetch from Langfuse: {e}"
+            )
+
+    if prompt_type == "chat":
+        if not fallback_messages:
+            raise ValueError(
+                f"No Langfuse prompt available for '{name}' and no fallback_messages provided."
+            )
+        return None, ChatPromptTemplate.from_messages(list(fallback_messages))
+
+    if not fallback_template:
+        raise ValueError(
+            f"No Langfuse prompt available for '{name}' and no fallback_template provided."
         )
-        
-        # Verify connection with auth check
-        client.auth_check()
-        
-        print(f"✅ Langfuse connection successful")
-        print(f"   Host: {Config.LANGFUSE_HOST}")
-        print(f"   Public Key: {Config.LANGFUSE_PUBLIC_KEY[:15]}...")
-        
-        client.flush()
-        return True
-        
-    except Exception as e:
-        print(f"❌ Langfuse connection failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+    return None, PromptTemplate.from_template(fallback_template)
+

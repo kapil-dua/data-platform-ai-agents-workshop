@@ -1,5 +1,5 @@
 """
-Utility modules for ETL monitoring application
+Utility modules for Data Platform AI Agents application
 """
 from .aws_tools import AWSGlueClient
 

@@ -1,8 +1,8 @@
-# Multi-Agent ETL Monitoring Application
+# Multi-Agent Data Platform AI Agents Application
 
 ## Project Structure
 ```
-ai-agents-etl-poc/
+data-ops-ai-agents/
 ├── README.md                   # Project documentation
 ├── requirements.txt            # Python dependencies
 ├── .env.example                # Environment template
@@ -14,7 +14,6 @@ ai-agents-etl-poc/
 │   ├── supervisor_agent.py     # Supervisor with LangGraph workflow
 │   ├── monitor_agent.py        # AWS Glue job monitoring agent
 │   ├── rca_agent.py            # Root cause analysis agent
-│   └── chat_agent.py           # Chat agent for user interactions
 ├── tools/
 │   ├── __init__.py
 │   ├── aws_utils.py            # AWS Glue/CloudWatch utilities

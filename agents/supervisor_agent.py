@@ -2,11 +2,9 @@
 Supervisor Agent - Coordinates workflow between monitor and RCA agents
 """
 from typing import TypedDict, Literal
-from datetime import datetime
 from langgraph.graph import StateGraph, END
 from agents.monitor_agent import MonitorAgent
 from agents.rca_agent import RCAAgent
-from models.llm_client import LLMClient
 from utils.langfuse_tracing import get_agent_handler, generate_session_id
 from config import Config
 
@@ -32,10 +30,12 @@ class SupervisorAgent:
         # Initialize worker agents
         self.monitor_agent = MonitorAgent()
         self.rca_agent = RCAAgent()
-        self.llm_client = LLMClient()
         
         # Build the workflow graph
-        self.workflow = self._build_workflow()
+        self.workflow = self._build_workflow()     
+        # Debug: Print the workflow graph in Mermaid format
+        print(self.workflow.get_graph().draw_mermaid())
+
     
     def _build_workflow(self) -> StateGraph:
         """Build the LangGraph workflow"""
@@ -67,7 +67,7 @@ class SupervisorAgent:
     def _supervisor_node(self, state: SupervisorState) -> SupervisorState:
         """Supervisor decision node"""
         print(f"\n[{self.name}] Starting Supervisor Node...")
-        print(f"[{self.name}] Task: {state.get('task', 'Monitor all ETL jobs')}")
+        #print(f"[{self.name}] Task: {state.get('task', 'Monitor all ETL jobs')}")
         
         return {
             **state,
@@ -124,6 +124,8 @@ class SupervisorAgent:
             print(f"[{self.name}] Task: {task}")
             print(f"[{self.name}] Session ID: {session_id}")
 
+
+            # Setup Langfuse tracing metadata
             trace_tags = ["workflow_orchestration", self.name.lower().replace(" ", "_")]
             trace_metadata = {
                 "langfuse_session_id": session_id,
@@ -145,6 +147,8 @@ class SupervisorAgent:
             callbacks = []
             if langfuse_handler:
                 callbacks.append(langfuse_handler)
+
+            # Langfuse tracing: 
 
             # Execute workflow
             final_state = self.workflow.invoke(

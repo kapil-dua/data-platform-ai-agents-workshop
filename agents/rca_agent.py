@@ -2,8 +2,15 @@
 RCA Agent - Performs Root Cause Analysis for failed ETL jobs
 """
 from typing import TypedDict
+from langchain_core.prompts import ChatPromptTemplate
+
 from tools.aws_tools import AWSGlueClient
 from models.llm_client import LLMClient
+from utils.langfuse_tracing import get_prompt_and_template
+from config import Config
+
+
+_JOB_LOG_TRUNCATE_CHARS = 3000
 
 
 class RCAAgentState(TypedDict):
@@ -14,14 +21,30 @@ class RCAAgentState(TypedDict):
 
 class RCAAgent:
     """Agent responsible for root cause analysis of failed jobs"""
-    
+
+    PROMPT_NAME = "job-failure-rca-analysis"
+
     def __init__(self):
         """Initialize RCA agent"""
         self.aws_client = AWSGlueClient()
         self.llm_client = LLMClient()
         self.name = "RCA Agent"
         self.description = "Performs root cause analysis on failed ETL jobs by analyzing logs"
-    
+
+        # Pull the RCA prompt from Langfuse Prompt Management.
+        # ``get_prompt_and_template`` returns a LangChain ChatPromptTemplate with
+        # ``metadata={"langfuse_prompt": ...}`` so any generation produced through
+        # this template is automatically linked to the prompt version in Langfuse.
+        self._langfuse_prompt, self._prompt_template = get_prompt_and_template(
+            name=self.PROMPT_NAME,
+            prompt_type="chat",
+            fallback_messages=[
+                ("system", Config._FALLBACK_RCA_SYSTEM_PROMPT),
+                ("user", Config._FALLBACK_RCA_USER_TEMPLATE),
+            ],
+        )
+        self._chain = self._prompt_template | self.llm_client.get_llm()
+
     def analyze_failed_jobs(self, state: dict) -> dict:
         """
         Perform RCA on all failed jobs
@@ -53,10 +76,7 @@ class RCAAgent:
                 print(f"[{self.name}] Analyzing {job_name} (Run: {run_id})...")
 
                 try:
-                    # Get job logs
                     logs = self.aws_client.get_job_logs(job_name, run_id)
-
-                    # Perform RCA using LLM
                     rca = self._perform_rca(job, logs)
 
                     rca_result = {
@@ -70,7 +90,7 @@ class RCAAgent:
 
                     rca_results.append(rca_result)
 
-                except Exception as e:
+                except Exception:
                     raise
 
             print(f"[{self.name}] RCA complete for all failed jobs.")
@@ -80,66 +100,58 @@ class RCAAgent:
                 "rca_results": rca_results,
             }
 
-        except Exception as e:
+        except Exception:
             raise
-    
+
     def _perform_rca(self, job_info: dict, logs: str) -> dict:
         """
-        Perform root cause analysis using LLM
-        
+        Perform root cause analysis using the ``job-failure-rca-analysis`` managed prompt.
+
         Args:
             job_info: Job information dictionary
             logs: Job logs from CloudWatch
-            
+
         Returns:
             Dictionary with RCA findings
         """
-        rca_generation_prompt = """You are an expert data engineer performing root cause analysis on failed ETL jobs.
-        Analyze the job failure information and logs to determine:
-        1. The root cause - Brief explanation of why the job failed (2-3 sentences)
-        2. Specific recommendation - Actionable steps to prevent this failure in the future
-        3. Suggest Issue Severity level like Critical, High, Medium, Low
-        
-        Provide your RCA analysis in a structured format with concise info and focused, Severity level summary less than 20 words."""
-        
-        user_message = f"""
-        Job Name: {job_info['job_name']}
-        Run ID: {job_info['run_id']}
-        Status: {job_info['status']}
-        Error Message: {job_info.get('error_message', 'N/A')}
-        
-        Job Logs:
-        {logs[:3000]}  # Limit log size for LLM
-        """
-        
-        llm_response = self.llm_client.invoke_with_prompt(
-            system_message=rca_generation_prompt,
-            user_message=user_message
-        )
-        
-        # Parse LLM response (you can make this more sophisticated)
+        variables = {
+            "job_name": job_info["job_name"],
+            "run_id": job_info["run_id"],
+            "status": job_info["status"],
+            "error_message": job_info.get("error_message", "N/A"),
+            "logs": (logs or "")[:_JOB_LOG_TRUNCATE_CHARS],
+        }
+
+        response = self._chain.invoke(variables)
+
+        if hasattr(response, "content"):
+            llm_response = response.content
+        elif isinstance(response, str):
+            llm_response = response
+        else:
+            llm_response = str(response)
+
         return {
             "root_cause": llm_response,
             "recommendations": self._extract_recommendations(llm_response),
-            "severity": self._determine_severity(job_info, llm_response)
+            "severity": self._determine_severity(job_info, llm_response),
         }
-    
+
     def _extract_recommendations(self, llm_response: str) -> list:
         """Extract recommendations from LLM response"""
-        # Simple extraction - can be enhanced with structured output
         recommendations = []
         lines = llm_response.split('\n')
-        
+
         for line in lines:
             if any(keyword in line.lower() for keyword in ['recommend', 'should', 'fix', 'resolve']):
                 recommendations.append(line.strip())
-        
+
         return recommendations[:5] if recommendations else ["Review logs manually for specific details"]
-    
+
     def _determine_severity(self, job_info: dict, llm_response: str) -> str:
         """Determine severity of the failure"""
         llm_lower = llm_response.lower()
-        
+
         if any(word in llm_lower for word in ['critical', 'severe', 'corruption', 'blocking']):
             return "Critical"
         elif any(word in llm_lower for word in ['high', 'important', 'data loss']):
@@ -148,4 +160,3 @@ class RCAAgent:
             return "Medium"
         else:
             return "Low"
-    

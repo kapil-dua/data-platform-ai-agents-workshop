@@ -8,7 +8,7 @@ Strictly use minimum input and output tokens for all agents. Avoid unnecessary v
 
 ## Project Overview
 
-This is a **Multi-Agent ETL Monitoring Application** designed to perform data platform operations using Agentic AI. The system coordinates multiple specialized agents like monitor ETL jobs, perform root cause analysis (RCA), and create incidents.
+This is a **Multi-Agent Data Platform AI Agents Application** designed to perform data platform operations using Agentic AI. The system coordinates multiple specialized agents like monitoring ETL jobs, performing root cause analysis (RCA), and creating incidents.
 
 ### Core Agents
 
@@ -16,7 +16,6 @@ This is a **Multi-Agent ETL Monitoring Application** designed to perform data pl
 2. **Monitor Agent**: Tracks AWS Glue job execution and status
 3. **RCA Agent**: Performs root cause analysis on job failures
 4. **Incident Creation Agent**: Creates incidents in incident management systems
-5. **Chat Agent**: Handles user interactions and queries
 ---
 
 ## Architecture & Design Patterns
@@ -66,7 +65,6 @@ data-ops-ai-agents/
 │   ├── supervisor_agent.py     # Main orchestrator
 │   ├── monitor_agent.py        # Job monitoring
 │   ├── rca_agent.py           # Failure analysis
-│   ├── chat_agent.py          # User interaction
 │   └── incident_agent.py      # Incident creation (if needed)
 ├── tools/
 │   ├── aws_utils.py           # AWS service integrations

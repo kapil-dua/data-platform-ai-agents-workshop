@@ -1,5 +1,5 @@
 """
-Agent modules for ETL monitoring application
+Agent modules for Data Platform AI Agents application
 """
 from .supervisor_agent import SupervisorAgent
 from .monitor_agent import MonitorAgent
