@@ -11,7 +11,7 @@ sys.path.insert(0, str(project_root))
 
 from config import Config
 from agents.supervisor_agent import SupervisorAgent
-from tools.aws_tools import AWSGlueClient
+from tools.databricks_tools import DatabricksJobsClient
 
 
 def test_configuration():
@@ -23,8 +23,8 @@ def test_configuration():
     try:
         Config.validate()
         print("✅ Configuration validated successfully")
-        print(f"   - AWS Region: {Config.AWS_REGION}")
-        print(f"   - LLM Model: {Config.GROQ_MODEL}")
+        print(f"   - Databricks workspace: {Config.DATABRICKS_WORKSPACE_HOST}")
+        print(f"   - LLM Model: {Config.DATABRICKS_MODEL_ID}")
         return True
     except ValueError as e:
         print(f"❌ Configuration error: {e}")
@@ -38,11 +38,11 @@ def test_aws_connection():
     print("=" * 60)
     
     try:
-        aws_client = AWSGlueClient()
-        jobs = aws_client.list_all_jobs()
+        databricks_client = DatabricksJobsClient()
+        jobs = databricks_client.list_all_jobs()
         
         print(f"✅ Connected to AWS successfully")
-        print(f"   - Found {len(jobs)} Glue jobs")
+        print(f"   - Found {len(jobs)} Databricks jobs")
         
         if jobs:
             print(f"   - Sample jobs: {', '.join(jobs[:3])}")

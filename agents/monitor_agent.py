@@ -1,9 +1,8 @@
 """
 Monitor Agent - Monitors Data Platform ETL job status
 """
-from typing import TypedDict, Annotated
-from langchain_core.messages import HumanMessage, SystemMessage
-from tools.aws_tools import AWSGlueClient
+from typing import TypedDict
+from tools.databricks_tools import DatabricksJobsClient
 from models.llm_client import LLMClient
 
 
@@ -15,18 +14,17 @@ class MonitorAgentState(TypedDict):
 
 
 class MonitorAgent:
-    """Agent responsible for monitoring AWS Glue job status"""
+    """Agent responsible for monitoring Databricks job status"""
     
     def __init__(self):
         """Initialize monitor agent"""
-        self.aws_client = AWSGlueClient()
-        self.llm_client = LLMClient()
+        self.databricks_client = DatabricksJobsClient()
         self.name = "Monitor Agent"
-        self.description = "Monitors AWS Glue ETL jobs and reports their status"
+        self.description = "Monitors Databricks jobs and reports their status"
     
     def monitor_jobs(self, state: dict) -> dict:
         """
-        Monitor all AWS Glue jobs and return their status
+        Monitor all Databricks jobs and return their status
 
         Args:
             state: Current agent state
@@ -38,11 +36,11 @@ class MonitorAgent:
             print(f"[{self.name}] Starting job monitoring...")
 
             # Get all jobs status
-            all_jobs = self.aws_client.get_all_jobs_status()
+            all_jobs = self.databricks_client.get_all_jobs_status()
             failed_jobs = [job for job in all_jobs if job['status'] == 'FAILED']
 
             # Format data for LLM analysis
-            jobs_summary = self.aws_client.format_job_status_summary(all_jobs)
+            jobs_summary = self.databricks_client.format_job_status_summary(all_jobs)
 
             # Log monitoring results
             monitoring_stats = {
@@ -69,7 +67,7 @@ class MonitorAgent:
     
     def get_job_details(self, job_name: str) -> dict:
         """Get detailed information about a specific job"""
-        job_runs = self.aws_client.get_job_runs(job_name, max_results=5)
+        job_runs = self.databricks_client.get_job_runs(job_name, max_results=5)
         return {
             "job_name": job_name,
             "recent_runs": job_runs

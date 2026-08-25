@@ -13,12 +13,11 @@ langgraph>=1.0.9
 langfuse>=4.13.0
 ollama>=0.6.1
 
-# AWS SDK
-boto3>=1.42.96
-botocore>=1.42.96
-
 # Web Framework
 streamlit>=1.56.0
+
+# Databricks API
+databricks-sdk>=0.130.0
 
 # Utilities
 python-dotenv>=1.2.2

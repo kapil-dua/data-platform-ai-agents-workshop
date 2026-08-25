@@ -60,7 +60,7 @@ PROMPTS = [
         "tags": ["etl_monitoring", "rca"],
         "config": {
             "temperature": 0.1,
-            "description": "Root cause analysis for failed AWS Glue ETL jobs",
+            "description": "Root cause analysis for failed ETL jobs",
         },
     },
 ]

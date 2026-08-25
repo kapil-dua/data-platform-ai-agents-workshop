@@ -12,11 +12,11 @@ data-ops-ai-agents/
 │   ├── __init__.py
 │   ├── agents-readme.md        # Agent-specific documentation
 │   ├── supervisor_agent.py     # Supervisor with LangGraph workflow
-│   ├── monitor_agent.py        # AWS Glue job monitoring agent
+│   ├── monitor_agent.py        # Databricks job monitoring agent
 │   ├── rca_agent.py            # Root cause analysis agent
 ├── tools/
 │   ├── __init__.py
-│   ├── aws_utils.py            # AWS Glue/CloudWatch utilities
+│   ├── databricks_tools.py     # Databricks Jobs API utilities
 │   └── llm_utils.py            # Groq LLM wrapper
 ├── models/
 │   └── ollama.py               # Ollama model integration
@@ -45,14 +45,29 @@ cp .env.example .env
 streamlit run app.py
 ```
 The application will open in your browser at `http://localhost:8501`
-## Environment Variables Required
+### Environment Variables Required
 - GROQ_API_KEY: Your Groq API key
-- AWS_ACCESS_KEY_ID: AWS access key
-- AWS_SECRET_ACCESS_KEY: AWS secret key
-- AWS_REGION: AWS region (default: us-east-1)
+- DATABRICKS_WORKSPACE_HOST: Databricks workspace URL used by the Jobs API
+- DATABRICKS_TOKEN: Databricks personal access token or service principal token
+- DATABRICKS_AI_GATEWAY: Databricks AI Gateway URL used by the configured LLM
 
-## Features
-- Supervisor agent coordinates workflow
-- Monitor agent tracks AWS Glue job status
-- RCA agent analyzes failed job logs
-- Real-time Streamlit dashboard
+
+## Agent Workflow
+
+### Supervisor Agent
+- Uses LangGraph to orchestrate workflow
+- Routes tasks to appropriate worker agents
+
+### Monitor Agent
+- Queries ETL Jobs API for job statuses
+- Identifies failed jobs
+
+### RCA Agent
+- Retrieves logs for failed jobs
+- Uses LLM to analyze logs and identify root causes
+- Provides actionable recommendations
+
+### Adding More Agents
+1. Create new agent file in `agents/` directory
+2. Add to workflow in `supervisor_agent.py`
+3. Update Streamlit UI in `app.py`

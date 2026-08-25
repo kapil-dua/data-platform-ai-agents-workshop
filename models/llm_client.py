@@ -8,23 +8,24 @@ from config import Config
 class LLMClient:
     """LLM client factory"""
     
-    MODEL_TO_USE = Config.MODEL_TO_USE
+    MODEL_PROVIDER = Config.MODEL_PROVIDER
     
     def __init__(self):
         """Initialize LLM client based on configuration"""
-        if self.MODEL_TO_USE == "ollama":
-            from models.ollama import create_model_instance
-            self.llm = create_model_instance(model_name=Config.OLLAMA_MODEL_ID)
-        elif self.MODEL_TO_USE == "groq":
+        if self.MODEL_PROVIDER == "ollama":
+            from models.ollama import OllamaClient
+            self._client = OllamaClient()
+            self.llm = self._client.get_llm()
+        elif self.MODEL_PROVIDER == "groq":
             from models.groq import GroqClient
             self._client = GroqClient()
             self.llm = self._client.get_llm()
-        elif self.MODEL_TO_USE == "databricks":
+        elif self.MODEL_PROVIDER == "databricks":
             from models.databricks import DatabricksClient
             self._client = DatabricksClient()
             self.llm = self._client.get_llm()
         else:
-            raise ValueError(f"Unknown model: {self.MODEL_TO_USE}")
+            raise ValueError(f"Unknown model: {self.MODEL_PROVIDER}")
     
     def get_llm(self):
         """Get the LLM instance"""

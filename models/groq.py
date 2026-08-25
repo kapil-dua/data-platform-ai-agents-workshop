@@ -16,6 +16,7 @@ class GroqClient:
             temperature=0.1,
             max_tokens=2000
         )
+        print(f"[GroqClient] Initialized Groq with model: {Config.GROQ_MODEL_ID}")
     
     def get_llm(self):
         """Get the LLM instance"""

@@ -14,11 +14,12 @@ class DatabricksClient:
         # The endpoint should end with /ai-gateway/mlflow/v1
         # Note: Databricks AI Gateway API doesn't support max_completion_tokens parameter
         self.llm = ChatOpenAI(
-            base_url=Config.DATABRICKS_HOST,
+            base_url=Config.DATABRICKS_AI_GATEWAY,
             api_key=Config.DATABRICKS_TOKEN,
             model=Config.DATABRICKS_MODEL_ID,
             temperature=0.1
         )
+        print(f"[DatabricksClient] Initialized Databricks AI Gateway with model: {Config.DATABRICKS_MODEL_ID}")
     
     def get_llm(self):
         """Get the LLM instance"""

@@ -4,7 +4,7 @@ RCA Agent - Performs Root Cause Analysis for failed ETL jobs
 from typing import TypedDict
 from langchain_core.prompts import ChatPromptTemplate
 
-from tools.aws_tools import AWSGlueClient
+from tools.databricks_tools import DatabricksJobsClient
 from models.llm_client import LLMClient
 from utils.langfuse_tracing import get_prompt_and_template
 from config import Config
@@ -26,10 +26,10 @@ class RCAAgent:
 
     def __init__(self):
         """Initialize RCA agent"""
-        self.aws_client = AWSGlueClient()
+        self.databricks_client = DatabricksJobsClient()
         self.llm_client = LLMClient()
         self.name = "RCA Agent"
-        self.description = "Performs root cause analysis on failed ETL jobs by analyzing logs"
+        self.description = "Performs root cause analysis on failed Databricks jobs by analyzing run output"
 
         # Pull the RCA prompt from Langfuse Prompt Management.
         # ``get_prompt_and_template`` returns a LangChain ChatPromptTemplate with
@@ -76,7 +76,7 @@ class RCAAgent:
                 print(f"[{self.name}] Analyzing {job_name} (Run: {run_id})...")
 
                 try:
-                    logs = self.aws_client.get_job_logs(job_name, run_id)
+                    logs = self.databricks_client.get_job_logs(job_name, run_id)
                     rca = self._perform_rca(job, logs)
 
                     rca_result = {
@@ -109,7 +109,7 @@ class RCAAgent:
 
         Args:
             job_info: Job information dictionary
-            logs: Job logs from CloudWatch
+            logs: Databricks run output and error details
 
         Returns:
             Dictionary with RCA findings

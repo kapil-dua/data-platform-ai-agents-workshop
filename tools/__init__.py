@@ -1,6 +1,6 @@
 """
 Utility modules for Data Platform AI Agents application
 """
-from .aws_tools import AWSGlueClient
+from .databricks_tools import DatabricksJobsClient
 
-__all__ = ['AWSGlueClient']
+__all__ = ['DatabricksJobsClient']

@@ -4,6 +4,7 @@ Streamlit Web Interface for Data Platform AI Agents
 import streamlit as st
 import time
 from datetime import datetime
+import config
 from config import Config
 from agents.supervisor_agent import SupervisorAgent
 
@@ -16,18 +17,28 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-MODEL_ID = Config.OLLAMA_MODEL_ID if Config.MODEL_TO_USE == "ollama" else Config.GROQ_MODEL_ID if Config.MODEL_TO_USE == "groq" else "None"
+MODEL_ID = (
+    Config.OLLAMA_MODEL_ID if Config.MODEL_PROVIDER == "ollama" else
+    Config.GROQ_MODEL_ID if Config.MODEL_PROVIDER == "groq" else
+    Config.DATABRICKS_MODEL_ID if Config.MODEL_PROVIDER == "databricks" else
+    "None"
+)
+
 
 def initialize_session_state():
     """Initialize session state variables"""
     if 'monitoring_complete' not in st.session_state:
         st.session_state.monitoring_complete = False
+    if 'monitoring_requested' not in st.session_state:
+        st.session_state.monitoring_requested = False
     if 'last_run_time' not in st.session_state:
         st.session_state.last_run_time = None
     if 'results' not in st.session_state:
         st.session_state.results = None
     if 'auto_refresh' not in st.session_state:
         st.session_state.auto_refresh = False
+    if 'refresh_interval' not in st.session_state:
+        st.session_state.refresh_interval = max(Config.REFRESH_INTERVAL, 1)
 
 
 def validate_configuration():
@@ -43,19 +54,38 @@ def validate_configuration():
 
 def display_header():
     """Display application header"""
-    st.title("🔍 Data Engineering Platform: AI Agents")
+    st.markdown(
+        """
+        <style>
+        [data-testid="stMetricLabel"] p {
+            font-size: 1.15rem;
+        }
+        [data-testid="stMetricValue"] {
+            font-size: 1.35rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.title("🔍 Data Platform: AI Agents")
     st.markdown("---")
     
     col1, col2, col3 = st.columns(3)
-    
+
     with col1:
+            st.metric(
+                label="🔧 Data Platform",
+                value=Config.DATABRICKS_WORKSPACE_HOST
+            )
+
+    with col2:
         st.metric(
             label="🤖 Active Agents",
             value="3",
             delta="Supervisor + 2 Workers"
         )
     
-    with col2:
+    with col3:
         if st.session_state.last_run_time:
             st.metric(
                 label="⏱️ Last Run (UTC)",
@@ -64,12 +94,6 @@ def display_header():
         else:
             st.metric(label="⏱️ Last Run (UTC)", value="Never")
     
-    with col3:
-        st.metric(
-            label="🔧 LLM Model",
-            value=MODEL_ID
-        )
-
 
 def display_sidebar():
     """Display sidebar with controls"""
@@ -79,29 +103,35 @@ def display_sidebar():
         st.subheader("Monitoring Options")
         
         # Manual trigger
-        if st.button("▶️ Run Monitoring Now", type="primary", use_container_width=True):
+        if st.button("▶️ Run Monitoring Now", type="primary", width="stretch"):
+            st.session_state.monitoring_requested = True
             st.session_state.monitoring_complete = False
             st.rerun()
         
         st.markdown("---")
         
         # Auto-refresh toggle
+        was_auto_refresh = st.session_state.auto_refresh
         auto_refresh = st.checkbox(
             "🔄 Auto-refresh",
             value=st.session_state.auto_refresh,
-            help=f"Automatically refresh every {Config.REFRESH_INTERVAL} seconds"
+            help=f"Automatically refresh every {st.session_state.refresh_interval} seconds"
         )
         st.session_state.auto_refresh = auto_refresh
+
+        if auto_refresh and not was_auto_refresh:
+            st.session_state.monitoring_requested = True
+            st.session_state.monitoring_complete = False
         
         if auto_refresh:
-            refresh_interval = st.slider(
+            st.session_state.refresh_interval = st.slider(
                 "Refresh Interval (seconds)",
-                min_value=60,
+                min_value=1,
                 max_value=600,
-                value=Config.REFRESH_INTERVAL,
-                step=30
+                value=st.session_state.refresh_interval,
+                step=1
             )
-            st.info(f"Next refresh in {refresh_interval} seconds")
+            st.info(f"Next refresh in {st.session_state.refresh_interval} seconds")
         
         st.markdown("---")
         
@@ -125,16 +155,16 @@ def display_sidebar():
         with st.expander("RCA Agent", expanded=False):
             st.write("**Role:** Root Cause Analysis")
             st.write("**Tasks:**")
-            st.write("- Analyzes CloudWatch logs")
+            st.write("- Analyzes Databricks run output")
             st.write("- Identifies failure patterns")
             st.write("- Provides recommendations")
         
         st.markdown("---")
         
         # System info
-        st.subheader("ℹ️ System Info")
-        st.text(f"AWS Region: {Config.AWS_REGION}")
-        st.text(f"Model: {Config.MODEL_TO_USE} ({MODEL_ID})")
+        st.subheader("ℹ️ Model Info")
+        st.text(f"Model provider: {Config.MODEL_PROVIDER}")
+        st.text(f"Model ID: {MODEL_ID}")
         
         # Observability info
         st.markdown("---")
@@ -147,11 +177,17 @@ def display_sidebar():
         else:
             st.info("⚪ Langfuse Tracing Disabled")
 
+        if st.button("Restart Streamlit"):
+            # Triggers a rerun of the script, picking up any new .env changes
+            st.rerun()
+
 
 def run_monitoring():
     """Execute the monitoring workflow"""
     try:
-        with st.spinner("🔄 Initializing agents..."):
+        st.session_state.last_run_time = datetime.now()
+
+        with st.spinner("🔄 Initializing agents workflow..."):
             supervisor = SupervisorAgent()
         
         # Create progress placeholders
@@ -180,7 +216,7 @@ def run_monitoring():
         # Store results
         st.session_state.results = results
         st.session_state.monitoring_complete = True
-        st.session_state.last_run_time = datetime.now()
+        st.session_state.monitoring_requested = False
         
         st.success("✅ Monitoring workflow completed successfully!")
         
@@ -250,7 +286,7 @@ def display_results():
         # Convert jobs list to table format
         import pandas as pd
         jobs_df = pd.DataFrame(jobs_data['all_jobs'])
-        st.dataframe(jobs_df, use_container_width=True)
+        st.dataframe(jobs_df, width="stretch")
     else:
         st.info("No job details available")
     
@@ -312,8 +348,8 @@ def main():
     # Main content area
     st.markdown("---")
     
-    # Run monitoring if not complete
-    if not st.session_state.monitoring_complete:
+    # Run monitoring only after an explicit or scheduled request
+    if st.session_state.monitoring_requested and not st.session_state.monitoring_complete:
         run_monitoring()
     
     # Display results
@@ -321,7 +357,8 @@ def main():
     
     # Auto-refresh logic
     if st.session_state.auto_refresh and st.session_state.monitoring_complete:
-        time.sleep(Config.REFRESH_INTERVAL)
+        time.sleep(st.session_state.refresh_interval)
+        st.session_state.monitoring_requested = True
         st.session_state.monitoring_complete = False
         st.rerun()
 
