@@ -1,5 +1,5 @@
 """
-Supervisor Agent - Coordinates workflow between monitor and RCA agents
+Supervisor Agent - Coordinates workflow across multiple agents
 """
 from typing import TypedDict, Literal
 from langgraph.graph import StateGraph, END
@@ -52,7 +52,7 @@ class SupervisorAgent:
         # Add edges
         workflow.add_conditional_edges(
             "supervisor",
-            self._route_next,
+            self._route_agent,
             {
                 "monitor": "monitor",
                 "end": END
@@ -86,7 +86,7 @@ class SupervisorAgent:
         updated_state = self.rca_agent.analyze_failed_jobs(state)
         return updated_state
     
-    def _route_next(self, state: SupervisorState) -> Literal["monitor", "end"]:
+    def _route_agent(self, state: SupervisorState) -> Literal["monitor", "end"]:
         """Route to next agent"""
         next_agent = state.get("next_agent", "")
         
@@ -123,7 +123,6 @@ class SupervisorAgent:
             print(f"\n[{self.name}] Starting ETL monitoring workflow...")
             print(f"[{self.name}] Task: {task}")
             print(f"[{self.name}] Session ID: {session_id}")
-
 
             # Setup Langfuse tracing metadata
             trace_tags = ["workflow_orchestration", self.name.lower().replace(" ", "_")]

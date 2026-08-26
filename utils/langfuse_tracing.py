@@ -12,7 +12,6 @@ import uuid
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langfuse.langchain import CallbackHandler
 from langfuse import Langfuse
-
 from config import Config
 
 

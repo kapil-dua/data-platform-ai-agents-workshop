@@ -24,6 +24,8 @@ build/
 *.swo
 *~
 .DS_Store
+.github/
+.cursor/
 
 # Database
 /data/
@@ -41,7 +43,3 @@ Thumbs.db
 
 # Docker
 .docker/
-
-# Coding Assistants
-.github/
-.cursor/
