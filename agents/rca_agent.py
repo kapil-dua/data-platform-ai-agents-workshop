@@ -1,9 +1,10 @@
 """
 RCA Agent - Performs Root Cause Analysis for failed ETL jobs
 """
-from typing import TypedDict
+from typing import Any, TypedDict
 from langchain_core.prompts import ChatPromptTemplate
 
+from agents.base_agent import AgentResult
 from tools.databricks_tools import DatabricksJobsClient
 from models.llm_client import LLMClient
 from utils.langfuse_tracing import get_prompt_and_template
@@ -45,6 +46,10 @@ class RCAAgent:
         )
         self._chain = self._prompt_template | self.llm_client.get_llm()
 
+    def execute(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Execute RCA using the common worker-agent contract."""
+        return self.analyze_failed_jobs(state)
+
     def analyze_failed_jobs(self, state: dict) -> dict:
         """
         Perform RCA on all failed jobs
@@ -62,7 +67,20 @@ class RCAAgent:
                 print(f"[{self.name}] No failed jobs to analyze.")
                 return {
                     **state,
-                    "rca_results": []
+                    "rca_results": [],
+                    "execution_log": [
+                        *state.get("execution_log", []),
+                        f"{self.name}: no failed jobs to analyze",
+                    ],
+                    "agent_results": [
+                        *state.get("agent_results", []),
+                        AgentResult(
+                            agent=self.name,
+                            status="completed",
+                            message="No failed jobs to analyze",
+                            data={"rca_count": 0},
+                        ),
+                    ],
                 }
 
             print(f"[{self.name}] Analyzing {len(failed_jobs)} failed jobs...")
@@ -98,6 +116,19 @@ class RCAAgent:
             return {
                 **state,
                 "rca_results": rca_results,
+                "execution_log": [
+                    *state.get("execution_log", []),
+                    f"{self.name}: analyzed {len(rca_results)} failed job(s)",
+                ],
+                "agent_results": [
+                    *state.get("agent_results", []),
+                    AgentResult(
+                        agent=self.name,
+                        status="completed",
+                        message=f"Analyzed {len(rca_results)} failed job(s)",
+                        data={"rca_count": len(rca_results)},
+                    ),
+                ],
             }
 
         except Exception:

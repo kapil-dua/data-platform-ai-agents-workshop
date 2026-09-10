@@ -39,6 +39,8 @@ def initialize_session_state():
         st.session_state.auto_refresh = False
     if 'refresh_interval' not in st.session_state:
         st.session_state.refresh_interval = max(Config.REFRESH_INTERVAL, 1)
+    if 'workflow_task' not in st.session_state:
+        st.session_state.workflow_task = "monitor_analyze_incident"
 
 
 def validate_configuration():
@@ -101,6 +103,20 @@ def display_sidebar():
         st.header("⚙️ Control Panel")
         
         st.subheader("Monitoring Options")
+
+        st.session_state.workflow_task = st.selectbox(
+            "Workflow",
+            options=[
+                "monitor",
+                "monitor_and_analyze",
+                "monitor_analyze_incident",
+            ],
+            index=[
+                "monitor",
+                "monitor_and_analyze",
+                "monitor_analyze_incident",
+            ].index(st.session_state.workflow_task),
+        )
         
         # Manual trigger
         if st.button("▶️ Run Monitoring Now", type="primary", width="stretch"):
@@ -203,7 +219,9 @@ def run_monitoring():
         progress_bar.progress(66)
         
         # Execute workflow
-        results = supervisor.run_monitoring_workflow()
+        results = supervisor.run_monitoring_workflow(
+            task=st.session_state.workflow_task,
+        )
         
         # status_text.text("📝 Supervisor Agent: Generating final report...")
         # progress_bar.progress(100)
@@ -232,6 +250,12 @@ def display_results():
         return
     
     results = st.session_state.results
+
+    execution_log = results.get("execution_log", [])
+    if execution_log:
+        st.subheader("Workflow Execution")
+        for message in execution_log:
+            st.write(message)
     
     # Overall metrics
     st.subheader("📊 Jobs Monitoring Status")
@@ -329,6 +353,11 @@ def display_results():
                         st.write(f"• {rec}")
     else:
         st.success("✅ No failed jobs detected. All systems operational!")
+
+    incident_results = results.get("incident_results", [])
+    if incident_results:
+        st.subheader("Incident Agent - Result")
+        st.dataframe(incident_results, width="stretch")
     
     st.markdown("---")
 

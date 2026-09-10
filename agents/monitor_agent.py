@@ -1,7 +1,8 @@
 """
 Monitor Agent - Monitors Data Platform ETL job status
 """
-from typing import TypedDict
+from typing import Any, TypedDict
+from agents.base_agent import AgentResult
 from tools.databricks_tools import DatabricksJobsClient
 from models.llm_client import LLMClient
 
@@ -21,6 +22,10 @@ class MonitorAgent:
         self.databricks_client = DatabricksJobsClient()
         self.name = "Monitor Agent"
         self.description = "Monitors Databricks jobs and reports their status"
+
+    def execute(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Execute monitoring using the common worker-agent contract."""
+        return self.monitor_jobs(state)
     
     def monitor_jobs(self, state: dict) -> dict:
         """
@@ -59,10 +64,23 @@ class MonitorAgent:
                     **monitoring_stats
                 },
                 "failed_jobs": failed_jobs,
-                "monitor_summary": jobs_summary
+                "monitor_summary": jobs_summary,
+                "execution_log": [
+                    *state.get("execution_log", []),
+                    f"{self.name}: found {len(failed_jobs)} failed job(s)",
+                ],
+                "agent_results": [
+                    *state.get("agent_results", []),
+                    AgentResult(
+                        agent=self.name,
+                        status="completed",
+                        message=f"Found {len(failed_jobs)} failed job(s)",
+                        data=monitoring_stats,
+                    ),
+                ],
             }
 
-        except Exception as e:
+        except Exception:
             raise
     
     def get_job_details(self, job_name: str) -> dict:
