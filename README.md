@@ -1,4 +1,4 @@
-# Multi-Agent Data Platform AI Agents Application
+# Data Engineering Platform AI Agents Application
 
 ## Project Structure
 ```
