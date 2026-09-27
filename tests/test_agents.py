@@ -31,17 +31,17 @@ def test_configuration():
         return False
 
 
-def test_aws_connection():
-    """Test AWS connection"""
+def test_databricks_connection():
+    """Test databricks connection"""
     print("\n" + "=" * 60)
-    print("Testing AWS Connection...")
+    print("Testing databricks Connection...")
     print("=" * 60)
     
     try:
         databricks_client = DatabricksJobsClient()
         jobs = databricks_client.list_all_jobs()
         
-        print(f"✅ Connected to AWS successfully")
+        print(f"✅ Connected to databricks successfully")
         print(f"   - Found {len(jobs)} Databricks jobs")
         
         if jobs:
@@ -49,7 +49,7 @@ def test_aws_connection():
         
         return True
     except Exception as e:
-        print(f"❌ AWS connection error: {e}")
+        print(f"❌ databricks connection error: {e}")
         return False
 
 
@@ -128,7 +128,7 @@ def main():
     
     tests = [
         ("Configuration", test_configuration),
-        ("AWS Connection", test_aws_connection),
+        ("databricks Connection", test_databricks_connection),
         ("Monitor Agent", test_monitor_agent),
         ("Supervisor Workflow", test_supervisor_workflow),
     ]

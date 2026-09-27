@@ -166,14 +166,18 @@ def display_sidebar():
             st.write("**Tasks:**")
             st.write("- Tracks Configured job runs")
             st.write("- Identifies failed jobs")
-            st.write("- Summarizes job statistics")
         
         with st.expander("RCA Agent", expanded=False):
             st.write("**Role:** Root Cause Analysis")
             st.write("**Tasks:**")
-            st.write("- Analyzes Databricks run output")
-            st.write("- Identifies failure patterns")
-            st.write("- Provides recommendations")
+            st.write("- Analyzes failed jobs runs")
+            st.write("- Provides Root Cause & Recommendations")
+
+        with st.expander("Incident Agent", expanded=False):
+                    st.write("**Role:** Incident Management")
+                    st.write("**Tasks:**")
+                    st.write("- Create Jira tickets for failed jobs")
+                    st.write("- Attach RCA analysis to tickets")
         
         st.markdown("---")
         

@@ -1,24 +1,24 @@
-# Note: All versions updated to latest as of April 2026
+# Note: All versions updated to latest as of Sep 2026
 # These versions are compatible with Python 3.12+
 
-# Core LangChain packages
-langchain>=1.2.8
-langchain-core>=1.2.8
+# Core LangChain & Orchestration packages
+langchain>=1.2.10
+langchain-core>=1.6.4
 langchain-community>=0.4.1
-langchain-mcp-adapters>=0.2.2
-langchain-groq>=1.1.2
-langchain-ollama>=1.0.0
-langchain-openai>=1.1.7
-langgraph>=1.0.9
-langfuse>=4.13.0
-ollama>=0.6.1
+langchain-mcp-adapters>=0.3.2
+langchain-groq>=1.1.3
+langchain-ollama>=1.1.0
+langchain-openai>=1.6.2
+langgraph>=1.2.12
+langfuse>=4.15.4
+ollama>=0.6.2
 
 # Web Framework
-streamlit>=1.56.0
+streamlit>=1.64.0
 
 # Databricks API
-databricks-sdk>=0.130.0
+databricks-sdk>=0.141.0
 
 # Utilities
 python-dotenv>=1.2.2
-pydantic>=2.13.3
+pydantic>=2.13.0
