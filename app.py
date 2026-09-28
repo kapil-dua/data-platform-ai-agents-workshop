@@ -157,9 +157,8 @@ def display_sidebar():
         with st.expander("Supervisor Agent", expanded=False):
             st.write("**Role:** Workflow Coordinator")
             st.write("**Tasks:**")
-            st.write("- Orchestrates agent execution")
-            st.write("- Routes tasks to worker agents")
-            st.write("- Generates final reports")
+            st.write("- Orchestrates multi-agents workflow execution")
+            st.write("- Coordinates specialized traige worker agents")
         
         with st.expander("Monitor Agent", expanded=False):
             st.write("**Role:** Job Status Monitoring")
