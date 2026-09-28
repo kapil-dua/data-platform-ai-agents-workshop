@@ -1,4 +1,4 @@
-# Application Requirements: Agentic Data Operations Platform
+# Requirements: Data Engineering Platform AI Agents Application
 
 ## 1. Purpose
 
@@ -68,9 +68,8 @@ The platform shall support a future Incident Creation Agent that:
 - Creates incidents for qualifying job failures.
 - Uses RCA results to populate incident details.
 - Includes job name, run ID, error information, root cause, recommendations, and severity.
-- Integrates with an incident-management platform such as ServiceNow.
+- Integrates with an incident-management platform such as ServiceNow, Jira
 - Prevents duplicate incidents for the same job run.
-- Records the created incident identifier and status.
 
 This capability is planned and is not currently implemented.
 

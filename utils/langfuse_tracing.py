@@ -155,8 +155,10 @@ def _get_langfuse_client() -> Optional[Langfuse]:
     global _LANGFUSE_CLIENT
 
     if not Config.LANGFUSE_ENABLED:
+        print("⚠️  Langfuse is disabled; no Langfuse client will be created")
         return None
     if not Config.LANGFUSE_PUBLIC_KEY or not Config.LANGFUSE_SECRET_KEY:
+        print("⚠️  Langfuse is misconfigured; missing public or secret key")
         return None
 
     if _LANGFUSE_CLIENT is None:

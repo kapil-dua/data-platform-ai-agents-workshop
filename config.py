@@ -29,13 +29,22 @@ class Config:
     DATABRICKS_TOKEN = os.getenv("DATABRICKS_TOKEN", "")
     DATABRICKS_AI_GATEWAY = os.getenv("DATABRICKS_AI_GATEWAY", "")
     DATABRICKS_MODEL_ID = os.getenv("DATABRICKS_MODEL_ID", "")
-    DATABRICKS_API_TIMEOUT = int(os.getenv("DATABRICKS_API_TIMEOUT", "30"))
+
+    JIRA_ENABLED = os.getenv("JIRA_ENABLED", "false").lower() == "true"
+    # Atlassian Rovo MCP settings
+    ATLASSIAN_MCP_URL = os.getenv("ATLASSIAN_MCP_URL", "https://mcp.atlassian.com/v2/mcp")
+    ATLASSIAN_API_TOKEN = os.getenv("ATLASSIAN_API_TOKEN", "")
+    ATLASSIAN_AUTH_HEADER = os.getenv("ATLASSIAN_AUTH_HEADER", "")
+    ATLASSIAN_EMAIL = os.getenv("ATLASSIAN_EMAIL", "")
+    ATLASSIAN_CLOUD_ID = os.getenv("ATLASSIAN_CLOUD_ID", "nagarro-dataai-1.atlassian.net")
+    ATLASSIAN_PROJECT_KEY = os.getenv("ATLASSIAN_PROJECT_KEY", "")
+    ATLASSIAN_ISSUE_TYPE = os.getenv("ATLASSIAN_ISSUE_TYPE", os.getenv("JIRA_ISSUE_TYPE", "Task"))
     
     # Langfuse Observability settings
     LANGFUSE_ENABLED = os.getenv("LANGFUSE_ENABLED", "true").lower() == "true"
+    LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
     LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "")
     LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "")
-    LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
     LANGFUSE_BATCH_SIZE = int(os.getenv("LANGFUSE_BATCH_SIZE", "100"))
     LANGFUSE_FLUSH_INTERVAL = int(os.getenv("LANGFUSE_FLUSH_INTERVAL", "10"))
 
