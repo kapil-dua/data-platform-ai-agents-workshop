@@ -84,7 +84,7 @@ def display_header():
         st.metric(
             label="🤖 Active Agents",
             value="3",
-            delta="Supervisor + 2 Workers"
+            delta="Supervisor + 3 Workers"
         )
     
     with col3:
@@ -102,7 +102,7 @@ def display_sidebar():
     with st.sidebar:
         st.header("⚙️ Control Panel")
         
-        st.subheader("Monitoring Options")
+        st.subheader("Traige Options")
 
         st.session_state.workflow_task = st.selectbox(
             "Workflow",
@@ -227,10 +227,6 @@ def run_monitoring():
             task=st.session_state.workflow_task,
         )
         
-        # status_text.text("📝 Supervisor Agent: Generating final report...")
-        # progress_bar.progress(100)
-        # time.sleep(0.5)
-        
         # Clear progress indicators
         progress_bar.empty()
         status_text.empty()
@@ -256,10 +252,17 @@ def display_results():
     results = st.session_state.results
 
     execution_log = results.get("execution_log", [])
-    if execution_log:
-        st.subheader("Workflow Execution")
-        for message in execution_log:
-            st.write(message)
+    workflow_graph = results.get("workflow_graph")
+    if execution_log or workflow_graph:
+        st.subheader("Traige Workflow Execution")
+        graph_column, messages_column = st.columns([1, 1.2])
+        with graph_column:
+            if workflow_graph:
+                st.caption("Executed path highlighted in green")
+                st.graphviz_chart(workflow_graph, width="stretch", height=360)
+        with messages_column:
+            for message in execution_log:
+                st.write(message)
     
     # Overall metrics
     st.subheader("📊 Jobs Monitoring Status")
@@ -303,9 +306,6 @@ def display_results():
     
     # Monitor Summary
     st.subheader("🔍 Monitor Agent - Result")
-    #monitor_summary = results.get('monitor_summary', 'No summary available')
-    # monitor_summary = results.get('jobs_data', 'No summary available')
-    # st.info(monitor_summary)
 
     # Jobs Data Table
     jobs_data = results.get('jobs_data', {})
@@ -324,15 +324,7 @@ def display_results():
     rca_results = results.get('rca_results', [])
     
     if rca_results:
-        # st.subheader("🔧 Root Cause Analysis")
-        
-        # # RCA Summary
-        # rca_summary = results.get('rca_summary', '')
-        # if rca_summary:
-        #     st.warning(rca_summary)
 
-        # st.markdown("---")
-        
         # Detailed RCA for each failed job
         st.subheader("📋 RCA Agent - Result")
         
@@ -355,8 +347,6 @@ def display_results():
                     st.write("**Recommendations:**")
                     for rec in rca['recommendations']:
                         st.write(f"• {rec}")
-    else:
-        st.success("✅ No failed jobs detected. All systems operational!")
 
     incident_results = results.get("incident_results", [])
     if incident_results:

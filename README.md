@@ -51,8 +51,8 @@ The application will open in your browser at `http://localhost:8501`
 ## Agent Workflow
 
 ### Supervisor Agent
+- A data-platform triage agent which coordinates specialized worker agents
 - Uses LangGraph to orchestrate workflow
-- Routes tasks to appropriate worker agents
 
 ### Monitor Agent
 - Queries ETL Jobs API for job statuses

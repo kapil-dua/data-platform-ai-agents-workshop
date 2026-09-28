@@ -1,5 +1,7 @@
-"""Supervisor Agent - Coordinates the data-platform agent workflow."""
+"""Supervisor Agent - A data-platform triage agent which coordinates specialized worker agents
+."""
 from typing import Any, Literal, TypedDict
+import json
 
 from langgraph.graph import END, StateGraph
 
@@ -31,7 +33,7 @@ class SupervisorAgent:
 
     def __init__(self):
         self.name = "Supervisor Agent"
-        self.description = "Coordinates monitoring, RCA, and demo incident workflows"
+        self.description = "A data-platform triage agent which coordinates specialized worker agents"
         self.monitor_agent = MonitorAgent()
         self.rca_agent = RCAAgent()
         self.incident_agent = IncidentAgent()
@@ -60,6 +62,63 @@ class SupervisorAgent:
         )
         workflow.add_edge("incident", END)
         return workflow.compile()
+
+    def _workflow_path(self, state: dict[str, Any]) -> list[str]:
+        path = ["supervisor"]
+        first_agent = state.get("next_agent")
+        if first_agent in {"monitor", "rca", "incident"}:
+            path.append(first_agent)
+
+        execution_log = state.get("execution_log", [])
+        if first_agent == "monitor" and any(
+            "failures found; routing to RCA Agent" in message
+            for message in execution_log
+        ):
+            path.append("rca")
+        if any(
+            "routing RCA results to Incident Agent" in message
+            for message in execution_log
+        ):
+            path.append("incident")
+        return path
+
+    def _workflow_graph_dot(self, workflow_path: list[str]) -> str:
+        """Return a Graphviz representation of the compiled workflow graph."""
+        graph = self.workflow.get_graph()
+        visited_nodes = ["__start__", *workflow_path, "__end__"]
+        active_edges = set(zip(visited_nodes, visited_nodes[1:]))
+        lines = [
+            "digraph workflow {",
+            "  rankdir=TB;",
+            '  graph [nodesep=0.12, ranksep=0.2, margin=0.04, pad=0.05];',
+            '  node [shape=box, style="rounded,filled", fillcolor="#eef4f3", color="#57736d", fontname="sans-serif", fontsize=9, margin="0.08,0.04"];',
+            '  edge [color="#71817d", fontname="sans-serif", fontsize=8, arrowsize=0.7];',
+        ]
+
+        for node_id, node in graph.nodes.items():
+            if node_id in visited_nodes:
+                attributes = 'fillcolor="#d9f2e8", color="#13805f", fontcolor="#174b3c", penwidth=2'
+            else:
+                attributes = 'fillcolor="#f1f3f2", color="#c5ccca", fontcolor="#78817e"'
+            lines.append(
+                f'  "{node_id}" [label={json.dumps(node.name)}, {attributes}];'
+            )
+
+        for edge in graph.edges:
+            attributes = []
+            if edge.data:
+                attributes.append(f"label={json.dumps(str(edge.data))}")
+            if edge.conditional:
+                attributes.append('style="dashed"')
+            if (edge.source, edge.target) in active_edges:
+                attributes.extend(['color="#13805f"', 'penwidth=2.5'])
+            else:
+                attributes.append('color="#c5ccca"')
+            suffix = f" [{', '.join(attributes)}]" if attributes else ""
+            lines.append(f'  "{edge.source}" -> "{edge.target}"{suffix};')
+
+        lines.append("}")
+        return "\n".join(lines)
 
     def _supervisor_node(self, state: SupervisorState) -> SupervisorState:
         """Select the first worker based on the requested demo task."""
@@ -162,6 +221,8 @@ class SupervisorAgent:
                     "tags": trace_tags,
                 },
             )
+            workflow_path = self._workflow_path(final_state)
+            final_state["workflow_graph"] = self._workflow_graph_dot(workflow_path)
             final_state["workflow_status"] = "completed"
             return final_state
         finally:
