@@ -6,8 +6,9 @@ import asyncio
 import base64
 from typing import Any
 
+import httpx
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 from config import Config
 
@@ -53,32 +54,36 @@ class JiraMCPClient:
         """Create issues through Atlassian's executeWrite MCP wrapper."""
         headers = {"Authorization": self.auth_header, "Content-Type": "application/json"}
         incidents: list[dict[str, Any]] = []
-        async with streamablehttp_client(url=self.mcp_url, headers=headers) as (read_stream, write_stream, _):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                for result in results:
-                    try:
-                        response = await session.call_tool(
-                            name="executeWrite",
-                            arguments=self._issue_arguments(result),
-                        )
-                        if response.isError:
-                            raise RuntimeError(str(response.content))
-                        incidents.append(
-                            {
-                                "incident_id": f"JIRA-{result['run_id']}",
-                                "job_name": result["job_name"],
-                                "run_id": result["run_id"],
-                                "severity": result["severity"],
-                                "status": "created",
-                                "message": "Jira incident created through Atlassian Rovo MCP",
-                                "jira_response": "\n".join(
-                                    getattr(item, "text", str(item)) for item in response.content
-                                ),
-                            }
-                        )
-                    except Exception as exc:
-                        incidents.append(self._failure(result, str(exc)))
+        async with httpx.AsyncClient(headers=headers) as http_client:
+            async with streamable_http_client(
+                url=self.mcp_url,
+                http_client=http_client,
+            ) as (read_stream, write_stream, _):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    for result in results:
+                        try:
+                            response = await session.call_tool(
+                                name="executeWrite",
+                                arguments=self._issue_arguments(result),
+                            )
+                            if response.isError:
+                                raise RuntimeError(str(response.content))
+                            incidents.append(
+                                {
+                                    "incident_id": f"JIRA-{result['run_id']}",
+                                    "job_name": result["job_name"],
+                                    "run_id": result["run_id"],
+                                    "severity": result["severity"],
+                                    "status": "created",
+                                    "message": "Jira incident created through Atlassian Rovo MCP",
+                                    "jira_response": "\n".join(
+                                        getattr(item, "text", str(item)) for item in response.content
+                                    ),
+                                }
+                            )
+                        except Exception as exc:
+                            incidents.append(self._failure(result, str(exc)))
         return incidents
 
     def _issue_arguments(self, result: dict[str, Any]) -> dict[str, Any]:
@@ -91,7 +96,7 @@ class JiraMCPClient:
             f"Error: {result.get('error_message', 'Not provided')}"
         )
         return {
-            "name": "createJiraIssue",
+            "name": "createJiraIssue", ## tool name in Atlassian MCP
             "cloudId": self.cloud_id,
             "inputs": {
                 "projectKey": self.project_key,
