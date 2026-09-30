@@ -1,25 +1,31 @@
 # Note: All versions updated to latest as of Sep 2026
 # These versions are compatible with Python 3.12+
 
-# Core LangChain & Orchestration packages
+# Core LangChain & orchestration packages
 langchain>=1.2.10
 langchain-core>=1.6.4
-langchain-community>=0.4.1
-langchain-mcp-adapters>=0.3.2
 langchain-groq>=1.1.3
 langchain-ollama>=1.1.0
 langchain-openai>=1.6.2
 langgraph>=1.2.12
-langfuse>=4.15.4
-ollama>=0.6.2
+langgraph-checkpoint-sqlite>=2.0.0
 
-# Web Framework
+# AI Agent Observability
+langfuse>=4.15.6
+
+# Web framework and MCP clients
 streamlit>=1.64.0
+httpx>=0.28.1
+mcp>=1.10.0
 
 # Databricks API
 databricks-sdk>=0.141.0
 
 # Utilities
 python-dotenv>=1.2.2
-pydantic>=2.13.0
-pytest>=9.0.0
+
+# Testing
+pytest>=8.4.0
+
+# sqlite storage
+pysqlite3-binary

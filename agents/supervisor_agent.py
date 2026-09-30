@@ -1,21 +1,24 @@
 """Supervisor Agent - A data-platform triage agent which coordinates specialized worker agents
 ."""
-from typing import Any, Literal, TypedDict
 import json
-
-from langgraph.graph import END, StateGraph
-
+import os
+import sqlite3
+from typing import Any, Literal, TypedDict
 from agents.base_agent import AgentResult
 from agents.incident_agent import IncidentAgent
 from agents.monitor_agent import MonitorAgent
 from agents.rca_agent import RCAAgent
 from config import Config
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph import END, StateGraph
+from utils.durable_memory import WorkflowStore
 from utils.langfuse_tracing import generate_session_id, get_agent_handler
 
 
 class SupervisorState(TypedDict):
     """Shared state passed between the supervisor and worker agents."""
     task: str
+    workflow_run_id: str
     jobs_data: dict[str, Any]
     failed_jobs: list[dict[str, Any]]
     monitor_summary: str
@@ -37,9 +40,21 @@ class SupervisorAgent:
         self.monitor_agent = MonitorAgent()
         self.rca_agent = RCAAgent()
         self.incident_agent = IncidentAgent()
+        self.workflow_store = WorkflowStore()
+        self.checkpointer = self._build_checkpointer()
         self.workflow = self._build_workflow()
         # Debug: Print the workflow graph in Mermaid format
         print(self.workflow.get_graph().draw_mermaid())
+
+    def _build_checkpointer(self):
+        """Create a lightweight SQLite-based LangGraph checkpointer for durable state."""
+        if SqliteSaver is None:
+            return None
+        data_dir = os.path.join(os.getcwd(), ".sqlite")
+        os.makedirs(data_dir, exist_ok=True)
+        checkpoint_path = os.path.join(data_dir, "langgraph_checkpoints.db")
+        conn = sqlite3.connect(checkpoint_path, check_same_thread=False)
+        return SqliteSaver(conn)
 
     def _build_workflow(self) -> StateGraph:
         workflow = StateGraph(SupervisorState)
@@ -61,6 +76,8 @@ class SupervisorAgent:
             {"incident": "incident", "end": END},
         )
         workflow.add_edge("incident", END)
+        if self.checkpointer is not None:
+            return workflow.compile(checkpointer=self.checkpointer)
         return workflow.compile()
 
     def _workflow_path(self, state: dict[str, Any]) -> list[str]:
@@ -148,6 +165,20 @@ class SupervisorAgent:
             *updated_state.get("execution_log", []),
             f"{self.name}: Monitor Agent completed; evaluating failures",
         ]
+        try:
+            run_id = updated_state.get("workflow_run_id")
+            if run_id:
+                self.workflow_store.record_event(
+                    run_id,
+                    self.monitor_agent.name,
+                    "completed",
+                    {
+                        "failed_jobs": len(updated_state.get("failed_jobs", [])),
+                        "job_count": len(updated_state.get("jobs_data", {}).get("all_jobs", [])),
+                    },
+                )
+        except Exception:
+            pass
         return updated_state
 
     def _rca_node(self, state: SupervisorState) -> SupervisorState:
@@ -157,11 +188,34 @@ class SupervisorAgent:
             *updated_state.get("execution_log", []),
             f"{self.name}: RCA Agent completed",
         ]
+        try:
+            run_id = updated_state.get("workflow_run_id")
+            if run_id:
+                self.workflow_store.record_event(
+                    run_id,
+                    self.rca_agent.name,
+                    "completed",
+                    {"rca_count": len(updated_state.get("rca_results", []))},
+                )
+        except Exception:
+            pass
         return updated_state
 
     def _incident_node(self, state: SupervisorState) -> SupervisorState:
         """Run the demo Incident Agent."""
-        return self.incident_agent.execute(state)
+        updated_state = self.incident_agent.execute(state)
+        try:
+            run_id = updated_state.get("workflow_run_id")
+            if run_id:
+                self.workflow_store.record_event(
+                    run_id,
+                    self.incident_agent.name,
+                    "completed",
+                    {"incident_count": len(updated_state.get("incident_results", []))},
+                )
+        except Exception:
+            pass
+        return updated_state
 
     def _route_agent(self, state: SupervisorState) -> Literal["monitor", "rca", "incident", "end"]:
         next_agent = state.get("next_agent", "")
@@ -189,6 +243,7 @@ class SupervisorAgent:
         """Run the selected workflow with optional Langfuse tracing."""
         initial_state: SupervisorState = {
             "task": task,
+            "workflow_run_id": session_id or generate_session_id(prefix="etl_monitoring"),
             "jobs_data": {},
             "failed_jobs": [],
             "monitor_summary": "",
@@ -200,7 +255,12 @@ class SupervisorAgent:
             "workflow_status": "queued",
             "error": "",
         }
-        session_id = session_id or generate_session_id(prefix="etl_monitoring")
+        session_id = initial_state["workflow_run_id"]
+        try:
+            self.workflow_store.start_run(run_id=session_id, task=task)
+            self.workflow_store.record_event(session_id, self.name, "workflow_started", {"task": task})
+        except Exception:
+            pass
         trace_tags = ["workflow_orchestration", self.name.lower().replace(" ", "_")]
         trace_metadata = {
             "langfuse_session_id": session_id,
@@ -212,18 +272,38 @@ class SupervisorAgent:
             additional_tags=["workflow_orchestration"],
         )
         callbacks = [langfuse_handler] if langfuse_handler else []
+        graph_config = {
+            "callbacks": callbacks,
+            "metadata": trace_metadata,
+            "tags": trace_tags,
+            "configurable": {"thread_id": session_id},
+        }
         try:
             final_state = self.workflow.invoke(
                 input=initial_state,
-                config={
-                    "callbacks": callbacks,
-                    "metadata": trace_metadata,
-                    "tags": trace_tags,
-                },
+                config=graph_config,
             )
             workflow_path = self._workflow_path(final_state)
             final_state["workflow_graph"] = self._workflow_graph_dot(workflow_path)
             final_state["workflow_status"] = "completed"
+            try:
+                self.workflow_store.update_run(
+                    run_id=session_id,
+                    status="completed",
+                    final_summary=f"workflow completed for task '{task}'",
+                )
+                self.workflow_store.record_event(
+                    session_id,
+                    self.name,
+                    "workflow_completed",
+                    {
+                        "task": task,
+                        "failed_jobs": len(final_state.get("failed_jobs", [])),
+                        "incident_count": len(final_state.get("incident_results", [])),
+                    },
+                )
+            except Exception:
+                pass
             return final_state
         finally:
             if langfuse_handler and Config.LANGFUSE_ENABLED:

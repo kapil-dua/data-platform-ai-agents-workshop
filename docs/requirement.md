@@ -136,35 +136,7 @@ The initial platform shall integrate with:
 
 The architecture shall allow additional data platforms, incident systems, and worker agents to be added without redesigning the supervisor workflow.
 
-## 8. Reliability and Error Handling
-
-The application shall:
-
-- Handle missing or invalid configuration before workflow execution.
-- Surface Databricks, LLM, prompt-management, and incident-integration errors.
-- Preserve clear failure context for troubleshooting.
-- Handle jobs with no available runs.
-- Handle jobs with no available output.
-- Limit log content passed to the LLM to control request size and cost.
-- Avoid creating incidents when RCA data is incomplete or the failure is not eligible.
-
-## 9. Testing Requirements
-
-The test suite shall cover:
-
-- Configuration validation.
-- Databricks job listing and pagination.
-- Job status normalization.
-- Execution-time calculation.
-- Missing-run handling.
-- Multi-task run-log aggregation.
-- Monitor Agent state generation.
-- RCA Agent behavior for failed and non-failed jobs.
-- Supervisor workflow routing.
-- LLM and external-service behavior using mocks where appropriate.
-- Incident deduplication and failure handling once incident creation is implemented.
-
-## 10. Non-Functional Requirements
+## 8. Non-Functional Requirements
 
 The application should be:
 
