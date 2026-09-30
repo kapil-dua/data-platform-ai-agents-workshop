@@ -42,15 +42,14 @@ class IncidentAgent:
         print(f"{self.name}: JIRA_ENABLED is false; creating demo incidents instead")
         incidents = []
         for result in state.get("rca_results", []):
-            if result.get("severity") in {"Critical", "High", "Medium"}:
-                incidents.append({
-                    "incident_id": f"DEMO-{result['run_id']}",
-                    "job_name": result["job_name"],
-                    "run_id": result["run_id"],
-                    "severity": result["severity"],
-                    "status": "created",
-                    "message": "Demo incident created",
-                })
+            incidents.append({
+                "incident_id": f"DEMO-{result['run_id']}",
+                "job_name": result["job_name"],
+                "run_id": result["run_id"],
+                "severity": result.get("severity"),
+                "status": "created",
+                "message": "Demo incident created",
+            })
 
         return {
             **state,
@@ -72,13 +71,9 @@ class IncidentAgent:
         }
     
     def execute_jira(self, state: dict[str, Any]) -> dict[str, Any]:
-        """Create Jira incidents for medium, high, and critical RCA results."""
+        """Create Jira incidents for all RCA results approved by a human."""
         print(f"{self.name}: JIRA_ENABLED is true; creating Jira incidents through Rovo MCP")
-        qualifying_results = [
-            result for result in state.get("rca_results", [])
-            if result.get("severity") in {"Critical", "High", "Medium"}
-        ]
-        incidents = self._create_incidents(qualifying_results)
+        incidents = self._create_incidents(state.get("rca_results", []))
         created_count = sum(incident["status"] == "created" for incident in incidents)
         failed_count = len(incidents) - created_count
         execution_status = "completed" if failed_count == 0 else "completed_with_errors"

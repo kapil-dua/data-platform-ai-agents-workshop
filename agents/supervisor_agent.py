@@ -11,6 +11,7 @@ from agents.rca_agent import RCAAgent
 from config import Config
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
+from langgraph.types import Command, interrupt
 from utils.durable_memory import WorkflowStore
 from utils.langfuse_tracing import generate_session_id, get_agent_handler
 
@@ -202,8 +203,49 @@ class SupervisorAgent:
         return updated_state
 
     def _incident_node(self, state: SupervisorState) -> SupervisorState:
-        """Run the demo Incident Agent."""
-        updated_state = self.incident_agent.execute(state)
+        """Pause for human approval before creating any proposed incidents."""
+        candidates = state.get("rca_results", [])
+        if not candidates:
+            return {
+                **state,
+                "incident_results": [],
+                "execution_log": [
+                    *state.get("execution_log", []),
+                    f"{self.name}: no RCA results to review; skipped incident creation",
+                ],
+                "workflow_status": "completed",
+            }
+
+        decision = interrupt(
+            {
+                "type": "incident_review",
+                "workflow_run_id": state.get("workflow_run_id"),
+                "incidents": candidates,
+            }
+        )
+        if not decision.get("approved", False):
+            return {
+                **state,
+                "incident_results": [
+                    {
+                        "incident_id": f"REVIEW-{result.get('run_id', 'unknown')}",
+                        "job_name": result.get("job_name", "unknown"),
+                        "run_id": result.get("run_id"),
+                        "severity": result.get("severity"),
+                        "status": "rejected",
+                        "message": "Incident creation rejected during human review",
+                    }
+                    for result in candidates
+                ],
+                "execution_log": [
+                    *state.get("execution_log", []),
+                    f"{self.name}: incident creation rejected during human review",
+                ],
+                "workflow_status": "rejected",
+            }
+
+        approved_state = {**state, "rca_results": candidates}
+        updated_state = self.incident_agent.execute(approved_state)
         try:
             run_id = updated_state.get("workflow_run_id")
             if run_id:
@@ -285,21 +327,27 @@ class SupervisorAgent:
             )
             workflow_path = self._workflow_path(final_state)
             final_state["workflow_graph"] = self._workflow_graph_dot(workflow_path)
-            final_state["workflow_status"] = "completed"
+            is_interrupted = bool(final_state.get("__interrupt__"))
+            final_state["workflow_status"] = "awaiting_review" if is_interrupted else "completed"
             try:
                 self.workflow_store.update_run(
                     run_id=session_id,
-                    status="completed",
-                    final_summary=f"workflow completed for task '{task}'",
+                    status=final_state["workflow_status"],
+                    final_summary=(
+                        f"workflow awaiting incident review for task '{task}'"
+                        if is_interrupted
+                        else f"workflow completed for task '{task}'"
+                    ),
                 )
                 self.workflow_store.record_event(
                     session_id,
                     self.name,
-                    "workflow_completed",
+                    "incident_review_requested" if is_interrupted else "workflow_completed",
                     {
                         "task": task,
                         "failed_jobs": len(final_state.get("failed_jobs", [])),
                         "incident_count": len(final_state.get("incident_results", [])),
+                        "review_count": len(final_state.get("rca_results", [])) if is_interrupted else 0,
                     },
                 )
             except Exception:
@@ -316,3 +364,28 @@ class SupervisorAgent:
                     ).flush()
                 except Exception:
                     pass
+
+    def resume_incident_review(self, run_id: str, approved: bool) -> dict[str, Any]:
+        """Resume a paused workflow with the human's incident-review decision."""
+        graph_config = {"configurable": {"thread_id": run_id}}
+        final_state = self.workflow.invoke(
+            Command(resume={"approved": approved}),
+            config=graph_config,
+        )
+        final_state["workflow_graph"] = self._workflow_graph_dot(self._workflow_path(final_state))
+        status = final_state.get("workflow_status", "completed")
+        try:
+            self.workflow_store.update_run(
+                run_id=run_id,
+                status=status,
+                final_summary=f"incident review {status} for workflow '{run_id}'",
+            )
+            self.workflow_store.record_event(
+                run_id,
+                self.name,
+                "incident_review_approved" if approved else "incident_review_rejected",
+                {"incident_count": len(final_state.get("incident_results", []))},
+            )
+        except Exception:
+            pass
+        return final_state
