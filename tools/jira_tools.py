@@ -48,6 +48,8 @@ class JiraMCPClient:
         try:
             return asyncio.run(self._create_incidents_async(results))
         except Exception as exc:
+            import traceback
+            traceback.print_exc()
             return [self._failure(result, str(exc)) for result in results]
 
     async def _create_incidents_async(self, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -58,7 +60,7 @@ class JiraMCPClient:
             async with streamable_http_client(
                 url=self.mcp_url,
                 http_client=http_client,
-            ) as (read_stream, write_stream, _):
+            ) as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
                     for result in results:
@@ -67,7 +69,7 @@ class JiraMCPClient:
                                 name="executeWrite",
                                 arguments=self._issue_arguments(result),
                             )
-                            if response.isError:
+                            if response.is_error:
                                 raise RuntimeError(str(response.content))
                             incidents.append(
                                 {
@@ -83,6 +85,8 @@ class JiraMCPClient:
                                 }
                             )
                         except Exception as exc:
+                            import traceback
+                            traceback.print_exc()
                             incidents.append(self._failure(result, str(exc)))
         return incidents
 
