@@ -46,6 +46,13 @@ class JiraMCPClient:
         if not self.auth_header:
             return [self._failure(result, "Atlassian authorization is not configured") for result in results]
         try:
+            # Streamlit runs its own event loop — nest_asyncio allows asyncio.run()
+            # to be called from within an already-running loop (e.g. inside Streamlit).
+            try:
+                import nest_asyncio
+                nest_asyncio.apply()
+            except ImportError:
+                pass  # not running inside Streamlit or another async framework
             return asyncio.run(self._create_incidents_async(results))
         except Exception as exc:
             import traceback
@@ -92,15 +99,19 @@ class JiraMCPClient:
 
     def _issue_arguments(self, result: dict[str, Any]) -> dict[str, Any]:
         """Build the executeWrite envelope used by the working MCP request."""
+        human_context = result.get("human_context", "")
+        human_section = f"\n\nHuman reviewer note: {human_context}" if human_context else ""
+
         description = (
             f"ETL job: {result['job_name']}\nRun ID: {result['run_id']}\n"
             f"Severity: {result['severity']}\n\n"
             f"Root cause: {result.get('root_cause', 'Not provided')}\n\n"
             f"Recommendations: {', '.join(result.get('recommendations', [])) or 'Not provided'}\n\n"
             f"Error: {result.get('error_message', 'Not provided')}"
+            f"{human_section}"
         )
         return {
-            "name": "createJiraIssue", ## tool name in Atlassian MCP
+            "name": "createJiraIssue",
             "cloudId": self.cloud_id,
             "inputs": {
                 "projectKey": self.project_key,
