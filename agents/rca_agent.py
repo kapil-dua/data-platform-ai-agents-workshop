@@ -32,10 +32,6 @@ class RCAAgent:
         self.name = "RCA Agent"
         self.description = "Performs root cause analysis on failed Databricks jobs by analyzing run output"
 
-        # Pull the RCA prompt from Langfuse Prompt Management.
-        # ``get_prompt_and_template`` returns a LangChain ChatPromptTemplate with
-        # ``metadata={"langfuse_prompt": ...}`` so any generation produced through
-        # this template is automatically linked to the prompt version in Langfuse.
         self._langfuse_prompt, self._prompt_template = get_prompt_and_template(
             name=self.PROMPT_NAME,
             prompt_type="chat",
@@ -51,14 +47,8 @@ class RCAAgent:
         return self.analyze_failed_jobs(state)
 
     def analyze_failed_jobs(self, state: dict) -> dict:
-        """
-        Perform RCA on all failed jobs
-
-        Args:
-            state: Current agent state containing failed jobs
-
-        Returns:
-            Updated state with RCA results
+        """Perform a single RCA generation pass on all failed jobs.
+        Results are passed to the rca_evaluator graph node for scoring.
         """
         try:
             failed_jobs = state.get("failed_jobs", [])
@@ -66,14 +56,9 @@ class RCAAgent:
             if not failed_jobs:
                 print(f"[{self.name}] No failed jobs to analyze.")
                 return {
-                    **state,
                     "rca_results": [],
-                    "execution_log": [
-                        *state.get("execution_log", []),
-                        f"{self.name}: no failed jobs to analyze",
-                    ],
+                    "execution_log": [f"{self.name}: no failed jobs to analyze"],
                     "agent_results": [
-                        *state.get("agent_results", []),
                         AgentResult(
                             agent=self.name,
                             status="completed",
@@ -83,49 +68,40 @@ class RCAAgent:
                     ],
                 }
 
-            print(f"[{self.name}] Analyzing {len(failed_jobs)} failed jobs...")
+            print(f"[{self.name}] Generating RCA for {len(failed_jobs)} failed job(s)...")
 
             rca_results = []
-
             for job in failed_jobs:
-                job_name = job['job_name']
-                run_id = job['run_id']
+                job_name = job["job_name"]
+                run_id   = job["run_id"]
+                print(f"[{self.name}] Analysing {job_name} (Run: {run_id})...")
+                logs = self.databricks_client.get_job_logs(job_name, run_id)
+                rca  = self._perform_rca(job, logs)
+                rca_results.append({
+                    "job_name":        job_name,
+                    "run_id":          run_id,
+                    "error_message":   job.get("error_message", "N/A"),
+                    "root_cause":      rca["root_cause"],
+                    "recommendations": rca["recommendations"],
+                    "severity":        rca["severity"],
+                    # Evaluator metadata — populated by rca_evaluator node
+                    "eval_score":             None,
+                    "eval_iterations":        1,
+                    "eval_passed":            None,
+                    "eval_scores_breakdown":  None,
+                    # Carry forward any feedback injected for retries
+                    "evaluator_feedback":     job.get("evaluator_feedback", ""),
+                })
 
-                print(f"[{self.name}] Analyzing {job_name} (Run: {run_id})...")
-
-                try:
-                    logs = self.databricks_client.get_job_logs(job_name, run_id)
-                    rca = self._perform_rca(job, logs)
-
-                    rca_result = {
-                        "job_name": job_name,
-                        "run_id": run_id,
-                        "error_message": job.get('error_message', 'N/A'),
-                        "root_cause": rca['root_cause'],
-                        "recommendations": rca['recommendations'],
-                        "severity": rca['severity'],
-                    }
-
-                    rca_results.append(rca_result)
-
-                except Exception:
-                    raise
-
-            print(f"[{self.name}] RCA complete for all failed jobs.")
-
+            print(f"[{self.name}] RCA generation complete — passing to evaluator.")
             return {
-                **state,
                 "rca_results": rca_results,
-                "execution_log": [
-                    *state.get("execution_log", []),
-                    f"{self.name}: analyzed {len(rca_results)} failed job(s)",
-                ],
+                "execution_log": [f"{self.name}: generated {len(rca_results)} RCA result(s)"],
                 "agent_results": [
-                    *state.get("agent_results", []),
                     AgentResult(
                         agent=self.name,
                         status="completed",
-                        message=f"Analyzed {len(rca_results)} failed job(s)",
+                        message=f"Generated {len(rca_results)} RCA result(s)",
                         data={"rca_count": len(rca_results)},
                     ),
                 ],
@@ -135,59 +111,44 @@ class RCAAgent:
             raise
 
     def _perform_rca(self, job_info: dict, logs: str) -> dict:
-        """
-        Perform root cause analysis using the ``job-failure-rca-analysis`` managed prompt.
+        """Single RCA generation pass — called by the evaluator loop."""
+        # Include evaluator feedback in prompt if present
+        feedback_note = ""
+        if job_info.get("evaluator_feedback"):
+            feedback_note = f"\n\nIMPORTANT — Evaluator feedback from previous attempt:\n{job_info['evaluator_feedback']}"
 
-        Args:
-            job_info: Job information dictionary
-            logs: Databricks run output and error details
-
-        Returns:
-            Dictionary with RCA findings
-        """
         variables = {
-            "job_name": job_info["job_name"],
-            "run_id": job_info["run_id"],
-            "status": job_info["status"],
-            "error_message": job_info.get("error_message", "N/A"),
-            "logs": (logs or "")[:_JOB_LOG_TRUNCATE_CHARS],
+            "job_name":      job_info["job_name"],
+            "run_id":        job_info["run_id"],
+            "status":        job_info.get("status", "FAILED"),
+            "error_message": job_info.get("error_message", "N/A") + feedback_note,
+            "logs":          (logs or "")[:_JOB_LOG_TRUNCATE_CHARS],
         }
 
         response = self._chain.invoke(variables)
-
-        if hasattr(response, "content"):
-            llm_response = response.content
-        elif isinstance(response, str):
-            llm_response = response
-        else:
-            llm_response = str(response)
+        llm_response = response.content if hasattr(response, "content") else str(response)
 
         return {
-            "root_cause": llm_response,
+            "root_cause":      llm_response,
             "recommendations": self._extract_recommendations(llm_response),
-            "severity": self._determine_severity(job_info, llm_response),
+            "severity":        self._determine_severity(job_info, llm_response),
         }
 
     def _extract_recommendations(self, llm_response: str) -> list:
         """Extract recommendations from LLM response"""
         recommendations = []
-        lines = llm_response.split('\n')
-
-        for line in lines:
-            if any(keyword in line.lower() for keyword in ['recommend', 'should', 'fix', 'resolve']):
+        for line in llm_response.split("\n"):
+            if any(kw in line.lower() for kw in ["recommend", "should", "fix", "resolve"]):
                 recommendations.append(line.strip())
-
         return recommendations[:5] if recommendations else ["Review logs manually for specific details"]
 
     def _determine_severity(self, job_info: dict, llm_response: str) -> str:
         """Determine severity of the failure"""
         llm_lower = llm_response.lower()
-
-        if any(word in llm_lower for word in ['critical', 'severe', 'corruption', 'blocking']):
+        if any(w in llm_lower for w in ["critical", "severe", "corruption", "blocking"]):
             return "Critical"
-        elif any(word in llm_lower for word in ['high', 'important', 'data loss']):
+        elif any(w in llm_lower for w in ["high", "important", "data loss"]):
             return "High"
-        elif any(word in llm_lower for word in ['medium', 'moderate']):
+        elif any(w in llm_lower for w in ["medium", "moderate"]):
             return "Medium"
-        else:
-            return "Low"
+        return "Low"
