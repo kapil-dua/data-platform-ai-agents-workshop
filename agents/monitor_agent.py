@@ -58,7 +58,6 @@ class MonitorAgent:
             print(f"[{self.name}] Monitoring complete. Found {len(failed_jobs)} failed jobs.")
 
             return {
-                **state,
                 "jobs_data": {
                     "all_jobs": all_jobs,
                     **monitoring_stats
@@ -66,11 +65,9 @@ class MonitorAgent:
                 "failed_jobs": failed_jobs,
                 "monitor_summary": jobs_summary,
                 "execution_log": [
-                    *state.get("execution_log", []),
                     f"{self.name}: found {len(failed_jobs)} failed job(s)",
                 ],
                 "agent_results": [
-                    *state.get("agent_results", []),
                     AgentResult(
                         agent=self.name,
                         status="completed",
