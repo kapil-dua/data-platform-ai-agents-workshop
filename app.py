@@ -7,6 +7,8 @@ from datetime import datetime
 import config
 from config import Config
 from agents.supervisor_agent import SupervisorAgent
+from utils.durable_memory import WorkflowStore
+import ticker_manager
 
 
 # Page configuration
@@ -35,16 +37,18 @@ def initialize_session_state():
         st.session_state.last_run_time = None
     if 'results' not in st.session_state:
         st.session_state.results = None
-    if 'auto_refresh' not in st.session_state:
-        st.session_state.auto_refresh = False
-    if 'refresh_interval' not in st.session_state:
-        st.session_state.refresh_interval = max(Config.REFRESH_INTERVAL, 1)
+    if 'ui_refresh_interval' not in st.session_state:
+        st.session_state.ui_refresh_interval = 30
+    if 'ui_auto_refresh' not in st.session_state:
+        st.session_state.ui_auto_refresh = False
     if 'workflow_task' not in st.session_state:
         st.session_state.workflow_task = "monitor_analyze_incident"
+    if 'mode' not in st.session_state:
+        st.session_state.mode = "ticker"  # "ticker" | "manual"
 
 
-def respond_to_incident_review(approved: bool) -> bool:
-    """Resume the paused LangGraph workflow with the reviewer's decision."""
+def respond_to_incident_review(decisions: list[dict]) -> bool:
+    """Resume the paused LangGraph workflow with per-incident review decisions."""
     run_id = st.session_state.results.get("workflow_run_id")
     if not run_id:
         st.error("Unable to resume incident review: workflow run ID is missing")
@@ -52,7 +56,7 @@ def respond_to_incident_review(approved: bool) -> bool:
     try:
         with st.spinner("Resuming workflow..."):
             supervisor = SupervisorAgent()
-            st.session_state.results = supervisor.resume_incident_review(run_id, approved)
+            st.session_state.results = supervisor.resume_incident_review(run_id, decisions)
         return True
     except Exception as exc:
         st.error(f"Unable to resume incident review: {exc}")
@@ -76,144 +80,238 @@ def display_header():
     st.markdown(
         """
         <style>
-        [data-testid="stMetricLabel"] p {
-            font-size: 1.15rem;
-        }
-        [data-testid="stMetricValue"] {
-            font-size: 1.35rem;
-        }
+        [data-testid="stMetricLabel"] p { font-size: 1.15rem; }
+        [data-testid="stMetricValue"]   { font-size: 1.35rem; }
         </style>
         """,
         unsafe_allow_html=True,
     )
     st.title("🔍 Data Platform: AI Agents")
     st.markdown("---")
-    
+
     col1, col2, col3 = st.columns(3)
-
     with col1:
-            st.metric(
-                label="🔧 Data Platform",
-                value=Config.DATABRICKS_WORKSPACE_HOST
-            )
-
+        st.metric(label="🔧 Data Platform", value=Config.DATABRICKS_WORKSPACE_HOST)
     with col2:
-        st.metric(
-            label="🤖 Active Agents",
-            value="3",
-            delta="Supervisor + 3 Workers"
-        )
-    
+        st.metric(label="🤖 Active Agents", value="3", delta="Supervisor + 3 Workers")
     with col3:
         if st.session_state.last_run_time:
             st.metric(
                 label="⏱️ Last Run (UTC)",
-                value=st.session_state.last_run_time.strftime("%Y-%m-%d %H:%M:%S")
+                value=st.session_state.last_run_time.strftime("%Y-%m-%d %H:%M:%S"),
             )
         else:
             st.metric(label="⏱️ Last Run (UTC)", value="Never")
-    
+
 
 def display_sidebar():
     """Display sidebar with controls"""
+    store = WorkflowStore()
+
     with st.sidebar:
         st.header("⚙️ Control Panel")
-        
-        st.subheader("Traige Options")
 
-        st.session_state.workflow_task = st.selectbox(
-            "Workflow",
-            options=[
-                "monitor",
-                "monitor_and_analyze",
-                "monitor_analyze_incident",
-            ],
-            index=[
-                "monitor",
-                "monitor_and_analyze",
-                "monitor_analyze_incident",
-            ].index(st.session_state.workflow_task),
+        # ── Mode toggle ────────────────────────────────────────────────────
+        st.subheader("🕹️ Run Mode")
+        mode = st.radio(
+            "How should the workflow run?",
+            options=["ticker", "manual"],
+            format_func=lambda m: "⏱️ Background Ticker (auto)" if m == "ticker" else "▶️ Manual (on demand)",
+            index=0 if st.session_state.mode == "ticker" else 1,
+            help=(
+                "Ticker: a separate ticker.py process runs on a schedule and the UI just reads results.\n"
+                "Manual: click the button to run the workflow directly from the UI."
+            ),
         )
-        
-        # Manual trigger
-        review_pending = bool(
-            st.session_state.results
-            and st.session_state.results.get("__interrupt__")
-        )
-        if st.button(
-            "▶️ Run Monitoring Now",
-            type="primary",
-            width="stretch",
-            disabled=review_pending,
-        ):
-            st.session_state.monitoring_requested = True
-            st.session_state.monitoring_complete = False
-            st.rerun()
-        if review_pending:
-            st.caption("Approve or reject the pending incidents before starting another run.")
-        
+        st.session_state.mode = mode
+
         st.markdown("---")
-        
-        # Auto-refresh toggle
-        was_auto_refresh = st.session_state.auto_refresh
-        auto_refresh = st.checkbox(
-            "🔄 Auto-refresh",
-            value=st.session_state.auto_refresh,
-            help=f"Automatically refresh every {st.session_state.refresh_interval} seconds"
-        )
-        st.session_state.auto_refresh = auto_refresh
 
-        if auto_refresh and not was_auto_refresh:
-            st.session_state.monitoring_requested = True
-            st.session_state.monitoring_complete = False
-        
-        if auto_refresh:
-            st.session_state.refresh_interval = st.slider(
-                "Refresh Interval (seconds)",
-                min_value=1,
-                max_value=600,
-                value=st.session_state.refresh_interval,
-                step=1
+        # ── Ticker schedule config + controls ──────────────────────────────
+        if mode == "ticker":
+            st.subheader("📅 Ticker Schedule")
+            current = store.get_ticker_schedule()
+
+            ticker_mode = st.selectbox(
+                "Schedule type",
+                options=["interval", "cron"],
+                index=0 if current.get("mode", "interval") == "interval" else 1,
+                format_func=lambda m: "Every N minutes" if m == "interval" else "Daily at fixed time (UTC)",
             )
-            st.info(f"Next refresh in {st.session_state.refresh_interval} seconds")
-        
+
+            if ticker_mode == "interval":
+                interval_min = st.number_input(
+                    "Run every (minutes)",
+                    min_value=1,
+                    max_value=1440,
+                    value=int(current.get("interval_min", 30)),
+                    step=5,
+                )
+                cron_time = current.get("cron_time", "06:00")
+            else:
+                cron_time = st.text_input(
+                    "Run at (HH:MM UTC)",
+                    value=current.get("cron_time", "06:00"),
+                    help="24-hour format, UTC. e.g. 06:30",
+                )
+                interval_min = int(current.get("interval_min", 30))
+
+            ticker_task = st.selectbox(
+                "Workflow",
+                options=["monitor", "monitor_and_analyze", "monitor_analyze_incident"],
+                index=["monitor", "monitor_and_analyze", "monitor_analyze_incident"].index(
+                    current.get("task", "monitor_and_analyze")
+                ),
+            )
+
+            st.markdown("---")
+
+            # ── Ticker status + start / stop ───────────────────────────────
+            running = ticker_manager.is_running()
+            pid     = ticker_manager.get_pid()
+
+            if running:
+                st.success(f"🟢 Ticker running (PID {pid})")
+            else:
+                st.warning("🔴 Ticker is not running")
+
+            start_col, stop_col = st.columns(2)
+            with start_col:
+                if st.button(
+                    "▶ Start Ticker",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=running,
+                ):
+                    store.save_ticker_schedule(
+                        mode=ticker_mode,
+                        interval_min=int(interval_min),
+                        cron_time=cron_time,
+                        task=ticker_task,
+                    )
+                    msg = ticker_manager.start(
+                        mode=ticker_mode,
+                        interval_min=int(interval_min),
+                        cron_time=cron_time,
+                        task=ticker_task,
+                    )
+                    st.info(msg)
+                    st.rerun()
+
+            with stop_col:
+                if st.button(
+                    "⏹ Stop Ticker",
+                    use_container_width=True,
+                    disabled=not running,
+                ):
+                    msg = ticker_manager.stop()
+                    st.info(msg)
+                    st.rerun()
+
+            if st.button("🔄 Apply New Schedule", use_container_width=True, disabled=not running):
+                ticker_manager.stop()
+                store.save_ticker_schedule(
+                    mode=ticker_mode,
+                    interval_min=int(interval_min),
+                    cron_time=cron_time,
+                    task=ticker_task,
+                )
+                msg = ticker_manager.start(
+                    mode=ticker_mode,
+                    interval_min=int(interval_min),
+                    cron_time=cron_time,
+                    task=ticker_task,
+                )
+                st.info(msg)
+                st.rerun()
+
+            st.markdown("---")
+
+            # ── Ticker log ─────────────────────────────────────────────────
+            with st.expander("📋 Ticker Log (last 30 lines)", expanded=False):
+                st.code(ticker_manager.get_log(30), language="text")
+                if st.button("🔃 Refresh Log"):
+                    st.rerun()
+
+            st.markdown("---")
+            st.subheader("🔄 UI Auto-Refresh")
+            st.caption("The UI polls SQLite for new ticker results.")
+            ui_auto_refresh = st.checkbox(
+                "Auto-refresh UI",
+                value=st.session_state.ui_auto_refresh,
+            )
+            st.session_state.ui_auto_refresh = ui_auto_refresh
+            if ui_auto_refresh:
+                st.session_state.ui_refresh_interval = st.slider(
+                    "Poll interval (seconds)",
+                    min_value=5,
+                    max_value=300,
+                    value=st.session_state.ui_refresh_interval,
+                    step=5,
+                )
+                st.info(f"Refreshing every {st.session_state.ui_refresh_interval}s")
+
+        # ── Manual mode controls ───────────────────────────────────────────
+        else:
+            st.subheader("🎯 Triage Options")
+            st.session_state.workflow_task = st.selectbox(
+                "Workflow",
+                options=["monitor", "monitor_and_analyze", "monitor_analyze_incident"],
+                index=["monitor", "monitor_and_analyze", "monitor_analyze_incident"].index(
+                    st.session_state.workflow_task
+                ),
+            )
+
+            review_pending = bool(
+                st.session_state.results
+                and st.session_state.results.get("__interrupt__")
+            )
+            if st.button(
+                "▶️ Run Monitoring Now",
+                type="primary",
+                use_container_width=True,
+                disabled=review_pending,
+            ):
+                st.session_state.monitoring_requested = True
+                st.session_state.monitoring_complete = False
+                st.rerun()
+            if review_pending:
+                st.caption("Approve or reject the pending incidents before starting another run.")
+
         st.markdown("---")
-        
-        # Agent Information
+
+        # ── Agent architecture ─────────────────────────────────────────────
         st.subheader("🤖 Agent Architecture")
-        
         with st.expander("Supervisor Agent", expanded=False):
             st.write("**Role:** Workflow Coordinator")
-            st.write("**Tasks:**")
-            st.write("- Orchestrates multi-agents workflow execution")
-            st.write("- Coordinates specialized traige worker agents")
-        
+            st.write("- Orchestrates multi-agent workflow execution")
+            st.write("- Coordinates specialised triage worker agents")
         with st.expander("Monitor Agent", expanded=False):
             st.write("**Role:** Job Status Monitoring")
-            st.write("**Tasks:**")
-            st.write("- Tracks Configured job runs")
+            st.write("- Tracks configured job runs")
             st.write("- Identifies failed jobs")
-        
+        with st.expander("RCA Fan-Out", expanded=False):
+            st.write("**Role:** Parallel Dispatcher")
+            st.write("- Fans out one RCA task per failed job")
+            st.write("- All jobs analysed simultaneously (Send API)")
         with st.expander("RCA Agent", expanded=False):
             st.write("**Role:** Root Cause Analysis")
-            st.write("**Tasks:**")
-            st.write("- Analyzes failed jobs runs")
-            st.write("- Provides Root Cause & Recommendations")
-
+            st.write("- Analyses failed job runs")
+            st.write("- Provides root cause & recommendations")
+        with st.expander("RCA Evaluator", expanded=False):
+            st.write("**Role:** Quality Gate")
+            st.write("- Scores RCA on clarity, actionability, completeness")
+            st.write("- Retries below-threshold results (max 3 iterations)")
         with st.expander("Incident Agent", expanded=False):
-                    st.write("**Role:** Incident Management")
-                    st.write("**Tasks:**")
-                    st.write("- Create Jira tickets for failed jobs")
-                    st.write("- Attach RCA analysis to tickets")
-        
+            st.write("**Role:** Incident Management")
+            st.write("- Creates Jira tickets for failed jobs")
+            st.write("- Attaches RCA analysis to tickets")
+
         st.markdown("---")
-        
-        # System info
         st.subheader("ℹ️ Model Info")
-        st.text(f"Model provider: {Config.MODEL_PROVIDER}")
-        st.text(f"Model ID: {MODEL_ID}")
-        
-        # Observability info
+        st.text(f"Provider : {Config.MODEL_PROVIDER}")
+        st.text(f"Model ID : {MODEL_ID}")
+
         st.markdown("---")
         st.subheader("📊 Observability")
         if Config.LANGFUSE_ENABLED:
@@ -225,63 +323,84 @@ def display_sidebar():
             st.info("⚪ Langfuse Tracing Disabled")
 
         if st.button("Restart Streamlit"):
-            # Triggers a rerun of the script, picking up any new .env changes
             st.rerun()
 
 
 def run_monitoring():
-    """Execute the monitoring workflow"""
+    """Execute the monitoring workflow directly from the UI (manual mode)."""
     try:
         st.session_state.last_run_time = datetime.now()
 
-        with st.spinner("🔄 Initializing agents workflow..."):
+        with st.spinner("🔄 Initialising agents workflow..."):
             supervisor = SupervisorAgent()
-        
-        # Create progress placeholders
+
         progress_bar = st.progress(0)
         status_text = st.empty()
-        
-        # Run workflow with progress updates
+
         status_text.text("📊 Monitor Agent: Checking job statuses...")
         progress_bar.progress(33)
         time.sleep(0.5)
-        
-        status_text.text("🔍 RCA Agent: Analyzing failed jobs...")
+
+        status_text.text("🔍 RCA Agent: Analysing failed jobs...")
         progress_bar.progress(66)
-        
-        # Execute workflow
-        results = supervisor.run_monitoring_workflow(
-            task=st.session_state.workflow_task,
-        )
-        
-        # Clear progress indicators
+
+        results = supervisor.run_monitoring_workflow(task=st.session_state.workflow_task)
+
         progress_bar.empty()
         status_text.empty()
-        
-        # Store results
+
         st.session_state.results = results
         st.session_state.monitoring_complete = True
         st.session_state.monitoring_requested = False
-        
+
         st.success("✅ Monitoring workflow completed successfully!")
-        
+
     except Exception as e:
         st.error(f"❌ Error during monitoring: {str(e)}")
         st.exception(e)
 
 
+def load_ticker_results() -> None:
+    """Read the latest ticker result from SQLite and update session state."""
+    store = WorkflowStore()
+    result = store.get_latest_result()
+    if result:
+        saved_at = result.get("_saved_at", "unknown")
+        if st.session_state.results is None or result.get("workflow_run_id") != (
+            st.session_state.results or {}
+        ).get("workflow_run_id"):
+            st.session_state.results = result
+            try:
+                st.session_state.last_run_time = datetime.strptime(
+                    saved_at, "%Y-%m-%d %H:%M:%S"
+                )
+            except Exception:
+                pass
+
+
 def display_results():
     """Display monitoring results"""
     if not st.session_state.results:
-        st.info("👆 Click 'Run Monitoring Now' to start monitoring your ETL jobs")
+        if st.session_state.mode == "ticker":
+            st.info(
+                "⏳ Waiting for the ticker to complete its first run.\n\n"
+                "Start the ticker in a separate terminal:\n```\npython ticker.py\n```"
+            )
+        else:
+            st.info("👆 Click 'Run Monitoring Now' to start monitoring your ETL jobs")
         return
-    
+
     results = st.session_state.results
+
+    # Show ticker source badge
+    saved_at = results.get("_saved_at")
+    if saved_at:
+        st.caption(f"📡 Results from background ticker — last updated: {saved_at} UTC")
 
     execution_log = results.get("execution_log", [])
     workflow_graph = results.get("workflow_graph")
     if execution_log or workflow_graph:
-        st.subheader("Traige Workflow Execution")
+        st.subheader("Triage Workflow Execution")
         graph_column, messages_column = st.columns([1, 1.2])
         with graph_column:
             if workflow_graph:
@@ -290,151 +409,195 @@ def display_results():
         with messages_column:
             for message in execution_log:
                 st.write(message)
-    
-    # Overall metrics
+
     st.subheader("📊 Jobs Monitoring Status")
-    
-    jobs_data = results.get('jobs_data', {})
-    
+    jobs_data = results.get("jobs_data", {})
     col1, col2, col3, col4 = st.columns(4)
-    
     with col1:
-        st.metric(
-            label="Total Jobs",
-            value=jobs_data.get('total_jobs', 0),
-            delta=None
-        )
-    
+        st.metric(label="Total Jobs", value=jobs_data.get("total_jobs", 0))
     with col2:
-        st.metric(
-            label="✅ Successful",
-            value=jobs_data.get('successful_count', 0),
-            delta=None,
-            delta_color="normal"
-        )
-    
+        st.metric(label="✅ Successful", value=jobs_data.get("successful_count", 0))
     with col3:
-        failed_count = jobs_data.get('failed_count', 0)
+        failed_count = jobs_data.get("failed_count", 0)
         st.metric(
             label="❌ Failed",
             value=failed_count,
             delta=f"{failed_count} issues" if failed_count > 0 else "No issues",
-            delta_color="inverse"
+            delta_color="inverse",
         )
-    
     with col4:
-        st.metric(
-            label="🔄 Running",
-            value=jobs_data.get('running_count', 0),
-            delta=None
-        )
-    
-    st.markdown("---")
-    
-    # Monitor Summary
-    st.subheader("🔍 Monitor Agent - Result")
+        st.metric(label="🔄 Running", value=jobs_data.get("running_count", 0))
 
-    # Jobs Data Table
-    jobs_data = results.get('jobs_data', {})
-    
-    if 'all_jobs' in jobs_data and jobs_data['all_jobs']:
-        # Convert jobs list to table format
+    st.markdown("---")
+    st.subheader("🔍 Monitor Agent - Result")
+    if "all_jobs" in jobs_data and jobs_data["all_jobs"]:
         import pandas as pd
-        jobs_df = pd.DataFrame(jobs_data['all_jobs'])
-        st.dataframe(jobs_df, width="stretch")
+        st.dataframe(pd.DataFrame(jobs_data["all_jobs"]), use_container_width=True)
     else:
         st.info("No job details available")
-    
-    st.markdown("---")
-    
-    # RCA Results
-    rca_results = results.get('rca_results', [])
-    
-    if rca_results:
 
-        # Detailed RCA for each failed job
+    st.markdown("---")
+    rca_results = results.get("rca_results", [])
+    if rca_results:
         st.subheader("📋 RCA Agent - Result")
-        
         for idx, rca in enumerate(rca_results):
-            with st.expander(f"❌ {rca['job_name']} - {rca['severity']} Severity", expanded=(idx == 0)):
+            eval_score = rca.get("eval_score")
+            eval_label = f" · Quality Score: {eval_score:.1f}/10" if eval_score else ""
+            eval_iters = rca.get("eval_iterations")
+            iter_label = f" · {eval_iters} iteration(s)" if eval_iters else ""
+            with st.expander(
+                f"❌ {rca['job_name']} — {rca['severity']} Severity{eval_label}{iter_label}",
+                expanded=(idx == 0),
+            ):
                 col1, col2 = st.columns([1, 2])
-                
                 with col1:
                     st.write("**Job Details:**")
                     st.text(f"Run ID: {rca['run_id']}")
                     st.text(f"Severity: {rca['severity']}")
-                    if rca['error_message']:
-                        st.text(f"Error: {rca['error_message'][:200]}...")
-                
+                    if rca.get("error_message"):
+                        st.text(f"Error: {str(rca['error_message'])[:200]}...")
+
+                    if eval_score is not None:
+                        st.write("**Evaluator Scores:**")
+                        breakdown = rca.get("eval_scores_breakdown", {})
+                        passed = rca.get("eval_passed", False)
+                        score_color = "green" if passed else "orange"
+                        st.markdown(
+                            f"Overall: :{score_color}[**{eval_score:.1f}/10**] "
+                            f"({'✅ Passed' if passed else '⚠️ Below threshold'})"
+                        )
+                        if breakdown:
+                            st.text(f"Clarity:       {breakdown.get('clarity', 'N/A')}/10")
+                            st.text(f"Actionability: {breakdown.get('actionability', 'N/A')}/10")
+                            st.text(f"Completeness:  {breakdown.get('completeness', 'N/A')}/10")
+                        if eval_iters:
+                            st.text(f"Iterations:    {eval_iters}")
+
                 with col2:
                     st.write("**Root Cause:**")
-                    st.write(rca['root_cause'])
-                
-                if rca.get('recommendations'):
+                    st.write(rca["root_cause"])
+
+                if rca.get("recommendations"):
                     st.write("**Recommendations:**")
-                    for rec in rca['recommendations']:
+                    for rec in rca["recommendations"]:
                         st.write(f"• {rec}")
 
     incident_results = results.get("incident_results", [])
     pending_review = results.get("__interrupt__", [])
     if pending_review:
         review_payload = pending_review[0].value
-        st.subheader("Human Review: Jira Incident Creation")
-        st.warning(f"{len(review_payload['incidents'])} incident(s) are awaiting approval. No Jira issues have been created yet.")
-        for index, incident in enumerate(review_payload["incidents"]):
+        incidents      = review_payload["incidents"]
+
+        st.subheader("🧑‍⚖️ Human Review: Incident Creation")
+        st.warning(
+            f"{len(incidents)} incident(s) awaiting your review. "
+            "Approve, adjust severity, and add context before submitting."
+        )
+
+        SEVERITIES = ["Critical", "High", "Medium", "Low"]
+
+        # Collect per-incident decisions from form widgets
+        per_incident: list[dict] = []
+        for idx, incident in enumerate(incidents):
             with st.expander(
-                f"{incident.get('job_name', 'Unknown job')} - {incident.get('severity', 'Unspecified')} severity",
-                expanded=(index == 0),
+                f"{'🔴' if incident.get('severity') in ('Critical','High') else '🟡'} "
+                f"{incident.get('job_name', 'Unknown')} — {incident.get('severity', 'Unspecified')}",
+                expanded=True,
             ):
-                st.json(incident)
-        approve_column, reject_column, _ = st.columns([1, 1, 5])
-        with approve_column:
-            if st.button("Approve and Create All", type="primary", key="approve_incidents"):
-                if respond_to_incident_review(approved=True):
+                col_info, col_controls = st.columns([2, 1])
+
+                with col_info:
+                    st.write("**Root Cause:**")
+                    st.write(incident.get("root_cause", "N/A"))
+                    if incident.get("recommendations"):
+                        st.write("**Recommendations:**")
+                        for rec in incident["recommendations"]:
+                            st.write(f"• {rec}")
+
+                with col_controls:
+                    approved = st.checkbox(
+                        "✅ Approve",
+                        value=True,
+                        key=f"approve_{idx}_{incident.get('run_id')}",
+                    )
+                    severity_override = st.selectbox(
+                        "Severity",
+                        options=SEVERITIES,
+                        index=SEVERITIES.index(incident.get("severity", "Medium"))
+                        if incident.get("severity") in SEVERITIES else 1,
+                        key=f"sev_{idx}_{incident.get('run_id')}",
+                        help="Override the LLM-assigned severity if needed",
+                    )
+                    context_note = st.text_area(
+                        "Context note (added to ticket)",
+                        placeholder="e.g. Related to yesterday's deployment, check commit abc123",
+                        key=f"ctx_{idx}_{incident.get('run_id')}",
+                        height=80,
+                    )
+
+                per_incident.append({
+                    "run_id":            incident.get("run_id"),
+                    "approved":          approved,
+                    "severity_override": severity_override if severity_override != incident.get("severity") else None,
+                    "context_note":      context_note.strip(),
+                })
+
+        approved_count = sum(1 for d in per_incident if d["approved"])
+        st.caption(f"{approved_count} of {len(incidents)} incident(s) marked for creation")
+
+        submit_col, reject_all_col, _ = st.columns([1, 1, 4])
+        with submit_col:
+            if st.button(
+                f"Submit Review ({approved_count} approved)",
+                type="primary",
+                key="submit_review",
+                disabled=len(per_incident) == 0,
+            ):
+                if respond_to_incident_review(per_incident):
                     st.rerun()
-        with reject_column:
-            if st.button("Reject All", key="reject_incidents"):
-                if respond_to_incident_review(approved=False):
+        with reject_all_col:
+            if st.button("Reject All", key="reject_all"):
+                all_rejected = [{**d, "approved": False} for d in per_incident]
+                if respond_to_incident_review(all_rejected):
                     st.rerun()
 
     if incident_results:
         st.subheader("Incident Agent - Result")
-        st.dataframe(incident_results, width="stretch")
-    
+        st.dataframe(incident_results, use_container_width=True)
+
     st.markdown("---")
 
 
 def main():
     """Main application logic"""
     initialize_session_state()
-    
-    # Validate configuration
+
     if not validate_configuration():
         st.stop()
-    
-    # Display header and sidebar
+
     display_header()
     display_sidebar()
-    
-    # Main content area
     st.markdown("---")
-    
-    # Run monitoring only after an explicit or scheduled request
-    if st.session_state.monitoring_requested and not st.session_state.monitoring_complete:
+
+    # In ticker mode: load latest results from SQLite
+    if st.session_state.mode == "ticker":
+        load_ticker_results()
+    # In manual mode: run on demand
+    elif st.session_state.monitoring_requested and not st.session_state.monitoring_complete:
         run_monitoring()
-    
-    # Display results
+
     display_results()
-    
-    # Auto-refresh logic
+
+    # UI auto-refresh in ticker mode (polls SQLite for new results)
     awaiting_review = bool(
-        st.session_state.results
-        and st.session_state.results.get("__interrupt__")
+        st.session_state.results and st.session_state.results.get("__interrupt__")
     )
-    if st.session_state.auto_refresh and st.session_state.monitoring_complete and not awaiting_review:
-        time.sleep(st.session_state.refresh_interval)
-        st.session_state.monitoring_requested = True
-        st.session_state.monitoring_complete = False
+    if (
+        st.session_state.mode == "ticker"
+        and st.session_state.ui_auto_refresh
+        and not awaiting_review
+    ):
+        time.sleep(st.session_state.ui_refresh_interval)
         st.rerun()
 
 
