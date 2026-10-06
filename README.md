@@ -48,8 +48,6 @@ Set `LANGFUSE_ENABLED=false` and `JIRA_ENABLED=false` and skip those sections en
 **Sign up:** https://www.databricks.com/try-databricks
 - Use any email (personal or work), no credit card required
 - Choose AWS as the cloud provider
-- Workspace provisions in ~10 minutes
-- Free trial includes $400 in DBU credits
 
 **Get the Workspace URL:**
 - Visible on your Databricks dashboard after provisioning
@@ -59,22 +57,20 @@ Set `LANGFUSE_ENABLED=false` and `JIRA_ENABLED=false` and skip those sections en
 **Generate a Personal Access Token:**
 - Top-right corner → your username → **Settings**
 - **Developer** → **Access Tokens** → **Generate New Token**
-- Give it a name (e.g. `workshop`), set expiry to 90 days
+- Give it a name (e.g. `flo-workshop`), set expiry to 7 days
 - Copy immediately — shown only once
 - → `DATABRICKS_TOKEN` in `.env`
 
 **Get the AI Gateway URL + Model ID:**
-- Left sidebar → **Machine Learning** → **Serving** → **AI Gateway** tab
-- Databricks pre-provisions Foundation Models automatically — wait ~10 mins after signup for them to appear
+- Left sidebar → **AI/ML** → **AI Gateway** tab
+- Databricks pre-provisions Foundation Models automatically — wait ~5 mins after signup for them to appear
 - Look for `system.ai.meta-llama-3-1-8b-instruct` (or any `*-instruct` chat model)
-- Click on the model to view its endpoint details
+- Click on the model to view its endpoint details > Make your first request > Python > look for base_url, model
 - Gateway base URL format: `https://dbc-XXXXXXXX.cloud.databricks.com/ai-gateway/mlflow/v1`
 - → `DATABRICKS_AI_GATEWAY` and `DATABRICKS_MODEL_ID` in `.env`
 
 **Create some jobs (so Monitor Agent has data):**
-- Left sidebar → **Workflows** → **Create Job**
-- Create 2-3 simple jobs — run one successfully, let one fail (e.g. point it to a non-existent notebook path)
-- This gives the Monitor and RCA agents real data to work with
+- Follow the section "Demo Jobs Setup" to create few jobs
 
 ---
 
@@ -91,7 +87,7 @@ Use this if Databricks AI Gateway is not available or as a backup.
 - Copy immediately — shown only once
 - → Set MODEL_PROVIDER=groq and `GROQ_API_KEY` in `.env`
 
-**Recommended model:** `llama-3.1-8b-instant`
+**Recommended model:** `openai/gpt-oss-20b`
 - → `GROQ_MODEL_ID` in `.env`
 
 ---
