@@ -89,7 +89,7 @@ Use this if Databricks AI Gateway is not available or as a backup.
 - Left sidebar → **API Keys** → **Create API Key**
 - Give it a name (e.g. `flo-workshop`)
 - Copy immediately — shown only once
-- → `GROQ_API_KEY` in `.env`
+- → Set MODEL_PROVIDER=groq and `GROQ_API_KEY` in `.env`
 
 **Recommended model:** `llama-3.1-8b-instant`
 - → `GROQ_MODEL_ID` in `.env`
@@ -135,7 +135,7 @@ Used for creating Jira tickets when job failures are detected. Set `JIRA_ENABLED
 - `ATLASSIAN_EMAIL` — the email you use to log into Atlassian
 - `ATLASSIAN_CLOUD_ID` — your site URL, format: `yourcompany.atlassian.net`
 - `ATLASSIAN_PROJECT_KEY` — short code visible in the Jira project URL (e.g. `DE`, `OPS`)
-- `ATLASSIAN_ISSUE_TYPE` — typically `Task` or `Bug`
+- `ATLASSIAN_ISSUE_TYPE` — typically `Task` or `Incident`
 
 ---
 
@@ -221,10 +221,10 @@ The script uploads notebooks to `/Shared/demo_etl/` in your workspace, creates j
 ### Option A — Manual mode (single terminal)
 
 ```powershell
-# Windows
+# macOS / Linux / WSL
 streamlit run app.py
 
-# macOS / Linux / WSL
+# Windows
 streamlit run app.py
 ```
 
@@ -267,8 +267,6 @@ TICKER_TASK=monitor_and_analyze
 ```
 
 ---
-
-
 
 ### Supervisor Agent
 - A data-platform triage agent which coordinates specialized worker agents
