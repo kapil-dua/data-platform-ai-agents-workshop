@@ -129,7 +129,18 @@ class DatabricksJobsClient:
                 })
 
                 # Add individual entries for each FAILED task
+                # Deduplicate by task_key — only the latest run per task
+                seen_task_keys: set = set()
                 for task in task_runs:
+                    task_status = self._normalize_status(task)
+                    if task_status != "FAILED":
+                        continue
+
+                    task_key = getattr(task, "task_key", "unknown")
+                    # Skip duplicate task keys (can appear if pipeline ran multiple times)
+                    if task_key in seen_task_keys:
+                        continue
+                    seen_task_keys.add(task_key)
                     task_status = self._normalize_status(task)
                     if task_status != "FAILED":
                         continue

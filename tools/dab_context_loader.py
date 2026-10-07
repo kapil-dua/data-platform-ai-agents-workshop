@@ -96,7 +96,7 @@ class DABContextLoader:
                     contexts[job_dir.name] = ctx
         return contexts
 
-    def _parse_dab(self, dab_file: Path, job_name: str) -> dict[str, Any]:
+    def _parse_dab(self, dab_file: Path, job_name: str, task_key: str | None = None) -> dict[str, Any]:
         """Parse a databricks.yml file and extract RCA-relevant context."""
         content = dab_file.read_text(encoding="utf-8")
 

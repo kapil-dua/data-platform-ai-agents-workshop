@@ -80,20 +80,29 @@ def display_header():
     st.markdown(
         """
         <style>
-        [data-testid="stMetricLabel"] p { font-size: 1.15rem; }
-        [data-testid="stMetricValue"]   { font-size: 1.35rem; }
+        [data-testid="stMetricLabel"] p { font-size: 0.78rem; }
+        [data-testid="stMetricValue"]   { font-size: 0.9rem;  }
+        [data-testid="stMetric"]        { padding-top: 0.2rem; padding-bottom: 0.2rem; }
+        .centered-title {
+            text-align: center;
+            font-size: 1.6rem;
+            font-weight: 700;
+            margin-bottom: 0.1rem;
+            margin-top: 0;
+        }
+        .block-container { padding-top: 0.8rem !important; }
         </style>
         """,
         unsafe_allow_html=True,
     )
-    st.title("🔍 Data Platform: AI Agents")
+    st.markdown('<div class="centered-title">🔍 Data Platform: AI Agents</div>', unsafe_allow_html=True)
     st.markdown("---")
 
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric(label="🔧 Data Platform", value=Config.DATABRICKS_WORKSPACE_HOST)
     with col2:
-        st.metric(label="🤖 Active Agents", value="3", delta="Supervisor + 3 Workers")
+        st.metric(label="🤖 Active Agents", value="4", delta="Supervisor + 4 Workers")
     with col3:
         if st.session_state.last_run_time:
             st.metric(
@@ -320,33 +329,112 @@ def display_sidebar():
 
 
 def run_monitoring():
-    """Execute the monitoring workflow directly from the UI (manual mode)."""
+    """Execute the monitoring workflow with live streaming UI updates."""
     try:
         st.session_state.last_run_time = datetime.now()
 
-        with st.spinner("🔄 Initialising agents workflow..."):
-            supervisor = SupervisorAgent()
+        supervisor = SupervisorAgent()
 
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+        # ── Live status placeholders ───────────────────────────────────────
+        status_header = st.empty()
+        jobs_placeholder   = st.empty()
+        rca_placeholder    = st.empty()
+        eval_placeholder   = st.empty()
 
-        status_text.text("📊 Monitor Agent: Checking job statuses...")
-        progress_bar.progress(33)
-        time.sleep(0.5)
+        status_header.info("⏳ Workflow starting...")
 
-        status_text.text("🔍 RCA Agent: Analysing failed jobs...")
-        progress_bar.progress(66)
+        rca_in_progress: dict = {}   # job_name → status string
 
-        results = supervisor.run_monitoring_workflow(task=st.session_state.workflow_task)
+        for chunk in supervisor.stream_monitoring_workflow(
+            task=st.session_state.workflow_task,
+        ):
+            node  = chunk["node"]
+            state = chunk["state"]
 
-        progress_bar.empty()
-        status_text.empty()
+            # ── Monitor completed ─────────────────────────────────────────
+            if node == "monitor":
+                jobs_data    = state.get("jobs_data", {})
+                failed_jobs  = state.get("failed_jobs", [])
+                failed_count = jobs_data.get("failed_count", len(failed_jobs))
+                total        = jobs_data.get("total_jobs", 0)
 
-        st.session_state.results = results
-        st.session_state.monitoring_complete = True
-        st.session_state.monitoring_requested = False
+                status_header.success(
+                    f"📊 Monitor complete — {total} jobs checked, "
+                    f"{failed_count} failed"
+                )
 
-        st.success("✅ Monitoring workflow completed successfully!")
+                if failed_jobs:
+                    with jobs_placeholder.container():
+                        st.markdown("**Failed jobs found — starting RCA:**")
+                        for j in failed_jobs:
+                            st.markdown(f"- ❌ `{j['job_name']}`")
+                        rca_in_progress = {j["job_name"]: "⏳ queued" for j in failed_jobs}
+
+            # ── RCA fan-out started ───────────────────────────────────────
+            elif node == "rca_fan_out":
+                status_header.info("🔍 RCA Fan-out — dispatching parallel analysis...")
+
+            # ── One RCA completed ─────────────────────────────────────────
+            elif node == "rca":
+                rca_results = state.get("rca_results", [])
+                for r in rca_results:
+                    rca_in_progress[r["job_name"]] = "✅ RCA done — awaiting evaluation"
+
+                with rca_placeholder.container():
+                    st.markdown("**RCA Progress:**")
+                    for jn, status in rca_in_progress.items():
+                        st.markdown(f"- `{jn}` — {status}")
+
+            # ── Evaluator running ─────────────────────────────────────────
+            elif node == "rca_evaluator":
+                rca_results = state.get("rca_results", [])
+                for r in rca_results:
+                    score = r.get("eval_score")
+                    passed = r.get("eval_passed")
+                    iters  = r.get("eval_iterations", 1)
+                    if score is not None:
+                        icon   = "✅" if passed else f"🔄 retry ({iters})"
+                        rca_in_progress[r["job_name"]] = (
+                            f"{icon} Score: {score:.1f}/10"
+                        )
+                    else:
+                        rca_in_progress[r["job_name"]] = "📐 evaluating..."
+
+                with eval_placeholder.container():
+                    st.markdown("**Evaluation Progress:**")
+                    for jn, status in rca_in_progress.items():
+                        st.markdown(f"- `{jn}` — {status}")
+
+                status_header.info("📐 RCA Evaluator running — checking quality...")
+
+            # ── HITL interrupt ────────────────────────────────────────────
+            elif node == "__interrupt__":
+                status_header.warning("🧑‍⚖️ Workflow paused — human review required")
+                st.session_state.results = state
+                st.session_state.monitoring_complete = True
+                st.session_state.monitoring_requested = False
+                status_header.empty()
+                jobs_placeholder.empty()
+                rca_placeholder.empty()
+                eval_placeholder.empty()
+                st.rerun()
+                return
+
+            # ── Workflow complete ─────────────────────────────────────────
+            elif node == "__end__":
+                st.session_state.results = state
+                st.session_state.monitoring_complete = True
+                st.session_state.monitoring_requested = False
+
+                # Clear live placeholders — display_results() will render final UI
+                status_header.empty()
+                jobs_placeholder.empty()
+                rca_placeholder.empty()
+                eval_placeholder.empty()
+
+                st.success("✅ Workflow completed!")
+                st.rerun()
+                return
 
     except Exception as e:
         st.error(f"❌ Error during monitoring: {str(e)}")

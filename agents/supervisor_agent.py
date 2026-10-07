@@ -75,6 +75,8 @@ class SupervisorState(TypedDict):
     # Evaluator loop control — replace reducer so evaluator can clear-and-reset
     rca_eval_pending: Annotated[list[dict[str, Any]], _replace_reducer]
     rca_eval_done:    Annotated[list[dict[str, Any]], _replace_reducer]
+    # Per-Send isolated job list — only the job(s) in this parallel branch
+    rca_current_jobs: Annotated[list[dict[str, Any]], _replace_reducer]
 
     # List fields — auto-appended by each node via operator.add
     failed_jobs:      Annotated[list[dict[str, Any]], operator.add]
@@ -86,22 +88,22 @@ class SupervisorState(TypedDict):
 
 # ── ReAct supervisor system prompt ────────────────────────────────────────────
 
-_REACT_SYSTEM = """You are a data-platform triage supervisor orchestrating specialized agents.
+_REACT_SYSTEM = """You are a data-platform triage supervisor deciding which agent to invoke next.
 
-Available tools:
-  - run_monitor   : Fetch Databricks ETL job statuses. Always call this first.
-  - run_rca       : Analyse failed jobs for root cause. Call when monitor finds failures.
-  - run_incident  : Create incident tickets. Call only when task requires it AND rca_results exist.
+Based on the current workflow state, decide the next step by responding with EXACTLY one of these words:
+  monitor   — if jobs have not been checked yet
+  rca       — if failed jobs were found and root cause analysis is needed
+  incident  — if RCA is complete and incidents need to be created
+  DONE      — if the workflow is complete (no failures, or all steps finished)
 
 Rules:
-  - Think step by step before deciding.
-  - After run_monitor: no failures → DONE. Failures + task requires analysis → run_rca.
-  - After run_rca: task requires incidents AND results exist → run_incident. Otherwise → DONE.
-  - Never call run_incident if rca_results is empty.
-  - When finished, respond with exactly: DONE
+  - Always start with: monitor
+  - After monitor: if failed_jobs > 0 and task requires analysis → rca. Otherwise → DONE
+  - After rca: if task requires incidents and rca_results exist → incident. Otherwise → DONE
+  - Never respond with incident if rca_results is empty
+  - Respond with ONLY the single word. No explanation, no punctuation.
 
-Current task: {task}
-"""
+Current task: {task}"""
 
 
 class SupervisorAgent:
@@ -115,8 +117,12 @@ class SupervisorAgent:
         self.evaluator_agent = RCAEvaluatorAgent()
         self.incident_agent  = IncidentAgent()
         self.workflow_store  = WorkflowStore()
-        self._last_fan_out_degree = 0  # captured for diagram label
-        self._last_execution_log  = []  # captured for retry detection in diagram
+        from tools.uc_lineage_fetcher import UCLineageFetcher
+        from agents.rca_subgraph import build_rca_subgraph
+        self.uc_fetcher      = UCLineageFetcher(self.monitor_agent.databricks_client.workspace_client)
+        self.rca_subgraph    = build_rca_subgraph(self.rca_agent, self.evaluator_agent, self.uc_fetcher)
+        self._last_fan_out_degree = 0
+        self._last_execution_log  = []
         self.checkpointer    = self._build_checkpointer()
         self.workflow        = self._build_workflow()
         print(self.workflow.get_graph().draw_mermaid())
@@ -151,8 +157,8 @@ class SupervisorAgent:
         workflow.add_node("supervisor",    self._react_supervisor_node)
         workflow.add_node("monitor",       self._monitor_node)
         workflow.add_node("rca_fan_out",   self._rca_fan_out_node)
-        workflow.add_node("rca",           self._rca_node)
-        workflow.add_node("rca_evaluator", self._rca_evaluator_node)
+        workflow.add_node("rca_subgraph",  self._rca_subgraph_node)  # invokes subgraph per job
+        workflow.add_node("rca_evaluator", self._rca_evaluator_node)  # fan-in collector
         workflow.add_node("incident",      self._incident_node)
 
         workflow.set_entry_point("supervisor")
@@ -170,12 +176,12 @@ class SupervisorAgent:
         # Fan-out: returns Send objects — one per failed job
         workflow.add_conditional_edges("rca_fan_out", self._fan_out_rca)
 
-        # Each parallel rca execution feeds into rca_evaluator
-        workflow.add_edge("rca", "rca_evaluator")
+        # Each parallel rca_subgraph feeds into the fan-in collector
+        workflow.add_edge("rca_subgraph", "rca_evaluator")
 
         workflow.add_conditional_edges(
             "rca_evaluator", self._route_after_evaluator,
-            {"rca": "rca", "incident": "incident", "end": END},
+            {"incident": "incident", "end": END},
         )
 
         workflow.add_edge("incident", END)
@@ -211,17 +217,22 @@ class SupervisorAgent:
         llm       = LLMClient().get_llm()
         response  = llm.invoke(messages)
         reasoning = response.content if hasattr(response, "content") else str(response)
-        rl        = reasoning.lower()
+        rl        = reasoning.strip().lower().split()[0] if reasoning.strip() else ""
 
-        # Parse decision — order matters (most specific first)
-        if "done" in rl and "run_" not in rl:
-            next_action = "end"
-        elif "run_incident" in rl or ("incident" in rl and rca_count > 0):
-            next_action = "incident"
-        elif "run_rca" in rl or ("rca" in rl and failed_count > 0 and rca_count == 0):
-            next_action = "rca"
-        elif "run_monitor" in rl or not state.get("jobs_data"):
+        # Parse single-word decision — hard guards take priority over LLM
+        # Never re-trigger RCA if results already exist (fan-out handles all jobs at once)
+        if not state.get("jobs_data"):
             next_action = "monitor"
+        elif rca_count > 0 and incident_count == 0 and task == "monitor_analyze_incident":
+            next_action = "incident"
+        elif rca_count > 0:
+            next_action = "end"
+        elif rl == "monitor":
+            next_action = "monitor"
+        elif rl == "rca" and failed_count > 0 and rca_count == 0:
+            next_action = "rca"
+        elif rl == "incident" and rca_count > 0:
+            next_action = "incident"
         else:
             next_action = "end"
 
@@ -229,8 +240,8 @@ class SupervisorAgent:
             "next_agent":      next_action,
             "workflow_status": "running" if next_action != "end" else "completed",
             "execution_log": [
-                f"Supervisor [ReAct]: {reasoning[:300]}{'...' if len(reasoning) > 300 else ''}",
-                f"Supervisor [ReAct]: → {next_action}",
+                f"Supervisor [ReAct]: decided → {next_action} "
+                f"(failed={failed_count}, rca={rca_count}, incidents={incident_count})",
             ],
         }
 
@@ -266,121 +277,75 @@ class SupervisorAgent:
             ],
         }
 
-    def _rca_node(self, state: SupervisorState) -> dict[str, Any]:
-        """Run RCA on a single job — called N times in parallel via Send API.
-        Results fan back in via rca_results (Annotated operator.add reducer).
+    def _rca_subgraph_node(self, state: SupervisorState) -> dict[str, Any]:
+        """Invoke the RCA+Evaluator subgraph for a single job (called in parallel via Send).
+
+        Each Send dispatches exactly one job. The subgraph runs:
+            rca → eval → rca (retry) → eval → ... → END
+        fully isolated — no shared state with other parallel branches.
         """
-        updated     = self.rca_agent.execute(state)
-        new_results = updated.get("rca_results", [])
+        from agents.rca_subgraph import make_subgraph_input
+
+        jobs = state.get("failed_jobs", [])
+        if not jobs:
+            return {"rca_results": [], "rca_eval_pending": [], "rca_eval_done": [],
+                    "rca_current_jobs": [], "execution_log": [], "agent_results": []}
+
+        job      = jobs[0]  # each Send passes exactly one job
+        job_name = job["job_name"]
+        run_id   = job["run_id"]
+
+        print(f"[RCA Subgraph] Starting for {job_name} (Run: {run_id})...")
+
+        # Build isolated subgraph input state
+        sg_input = make_subgraph_input(job, self.rca_agent, self.uc_fetcher)
+
+        # Invoke the compiled subgraph — runs rca→eval→retry loop in isolation
+        sg_output = self.rca_subgraph.invoke(sg_input)
+
+        best   = sg_output.get("best_result") or sg_output.get("rca_result", {})
+        score  = best.get("eval_score", 0.0) or 0.0
+        passed = best.get("eval_passed", False)
+        iters  = best.get("eval_iterations", 1)
+
+        print(
+            f"[RCA Subgraph] {job_name} complete — "
+            f"score={score:.1f} passed={passed} iterations={iters}"
+        )
+
         return {
-            # Fan-in via operator.add — all parallel nodes append here
-            "rca_results":      new_results,
-            # Clear pending so evaluator starts fresh each cycle
+            "rca_results":      [best] if best else [],
             "rca_eval_pending": [],
-            "rca_eval_done":    [],
-            "agent_results":    updated.get("agent_results", []),
+            "rca_eval_done":    [best] if best else [],
+            "rca_current_jobs": [job],
+            "agent_results":    [],
             "execution_log":    [
-                *updated.get("execution_log", []),
-                f"Supervisor: RCA Agent completed — {len(new_results)} result(s) ready for evaluation",
+                f"RCA+Eval [{job_name}]: score {score:.1f}/10 "
+                f"({chr(9989) if passed else chr(9888)}) in {iters} iteration(s)",
             ],
         }
 
-    def _rca_evaluator_node(self, state: SupervisorState) -> dict[str, Any]:
+
+    def _rca_evaluator_node(self, state: "SupervisorState") -> dict:
         """
-        Evaluator-Optimizer node (Option 6).
-
-        On first pass: reads all results from rca_results (fan-in from parallel rca nodes).
-        On retry pass: reads from rca_eval_pending (only the ones that need retry).
-        Results that pass are kept in rca_results. Failed results go to rca_eval_pending for retry.
+        Evaluator-Optimizer graph node — acts as fan-in point after parallel RCA branches.
+        Results are already scored inside each subgraph branch. This node just
+        logs the summary and routes to incident or end.
         """
-        # On retry, evaluate only pending items; on first pass, evaluate all rca_results
-        pending_retry = state.get("rca_eval_pending", [])
-        to_evaluate   = pending_retry if pending_retry else state.get("rca_results", [])
-
-        passed = []
-        failed = []
-        log    = []
-
-        for rca in to_evaluate:
-            score = rca.get("eval_score")
-            if score is None:
-                # Extract DAB context and UC lineage stored on the RCA result
-                # so the evaluator can check whether they were actually used
-                from tools.dab_context_loader import DABContextLoader
-                from tools.uc_lineage_fetcher import UCLineageFetcher
-                dab_loader = DABContextLoader()
-                dab_ctx    = dab_loader.get_context(rca.get("job_name", ""))
-                dab_text   = dab_loader.format_for_prompt(dab_ctx)
-                uc_ctx     = rca.get("uc_lineage", {})
-                uc_text    = UCLineageFetcher(
-                    self.monitor_agent.databricks_client.workspace_client
-                ).format_for_prompt(uc_ctx)
-
-                evaluation = self.evaluator_agent.evaluate(
-                    job_name=rca.get("job_name", ""),
-                    error_message=rca.get("error_message", ""),
-                    rca_analysis=rca.get("root_cause", ""),
-                    dab_context=dab_text,
-                    uc_lineage=uc_text,
-                )
-                rca = {
-                    **rca,
-                    "eval_score":      evaluation.overall_score,
-                    "eval_passed":     evaluation.passed,
-                    "eval_iterations": rca.get("eval_iterations", 1),
-                    "eval_scores_breakdown": {
-                        "clarity":       evaluation.clarity_score,
-                        "actionability": evaluation.actionability_score,
-                        "completeness":  evaluation.completeness_score,
-                    },
-                    "_eval_feedback":              evaluation.feedback,
-                    "_eval_clarity_feedback":      evaluation.clarity_feedback,
-                    "_eval_actionability_feedback":evaluation.actionability_feedback,
-                    "_eval_completeness_feedback": evaluation.completeness_feedback,
-                }
-                score = evaluation.overall_score
-
-            max_iters    = self.evaluator_agent.max_iterations
-            current_iter = rca.get("eval_iterations", 1)
-
-            if rca.get("eval_passed") or current_iter >= max_iters:
-                status = "✅ passed" if rca.get("eval_passed") else f"⚠️ max iterations ({max_iters}) reached"
-                log.append(
-                    f"RCA Evaluator: {rca['job_name']} — score {score:.1f}/10 "
-                    f"(C:{rca['eval_scores_breakdown']['clarity']:.0f} "
-                    f"A:{rca['eval_scores_breakdown']['actionability']:.0f} "
-                    f"Co:{rca['eval_scores_breakdown']['completeness']:.0f}) {status}"
-                )
-                passed.append(rca)
-            else:
-                log.append(
-                    f"RCA Evaluator: {rca['job_name']} — score {score:.1f}/10 "
-                    f"(C:{rca['eval_scores_breakdown']['clarity']:.0f} "
-                    f"A:{rca['eval_scores_breakdown']['actionability']:.0f} "
-                    f"Co:{rca['eval_scores_breakdown']['completeness']:.0f}) "
-                    f"below threshold {EVAL_THRESHOLD} — retry {current_iter + 1}/{max_iters}"
-                )
-                # Build structured targeted feedback for the retry
-                feedback_parts = []
-                if rca.get("_eval_clarity_feedback"):
-                    feedback_parts.append(f"CLARITY: {rca['_eval_clarity_feedback']}")
-                if rca.get("_eval_actionability_feedback"):
-                    feedback_parts.append(f"ACTIONABILITY: {rca['_eval_actionability_feedback']}")
-                if rca.get("_eval_completeness_feedback"):
-                    feedback_parts.append(f"COMPLETENESS: {rca['_eval_completeness_feedback']}")
-
-                rca["evaluator_feedback"] = "\n\n".join(feedback_parts) or rca.get("_eval_feedback", "")
-                rca["eval_iterations"]    = current_iter + 1
-                rca["eval_score"]  = None
-                rca["eval_passed"] = None
-                failed.append(rca)
-
+        rca_results = state.get("rca_results", [])
+        scored = [r for r in rca_results if r.get("eval_score") is not None]
+        log = [
+            f"RCA Evaluator: {r['job_name']} — "
+            f"score {r.get('eval_score', 0):.1f}/10 "
+            f"({'✅' if r.get('eval_passed') else '⚠️'}) "
+            f"in {r.get('eval_iterations', 1)} iteration(s)"
+            for r in scored
+        ]
         return {
-            # Replace rca_results with scored+passed versions
-            "rca_results":      passed,
-            # Replace pending — empty means no retry, non-empty triggers retry
-            "rca_eval_pending": failed,
-            "rca_eval_done":    passed,
+            # Do NOT re-emit rca_results — already accumulated via _rca_results_reducer
+            # Re-emitting would cause duplicates via the append reducer
+            "rca_eval_pending": [],
+            "rca_eval_done":    scored,
             "execution_log":    log,
         }
 
@@ -407,24 +372,36 @@ class SupervisorAgent:
         """
         Option 4 — Parallel RCA using LangGraph Send API.
 
-        Returns one Send per failed job. LangGraph executes all rca nodes
-        simultaneously. Results merge back via Annotated[list, operator.add]
-        on rca_results — no manual merging needed (Option 3 enables this).
+        For Groq: caps parallelism via RCA_MAX_PARALLEL (default 2) to stay within TPM limits.
+        For Databricks/Ollama: runs all jobs in parallel with no cap.
         """
+        import os
         failed_jobs = state.get("failed_jobs", [])
         if not failed_jobs:
             return END
+
+        # Only cap parallelism for Groq — Databricks AI Gateway has no rate limits
+        if Config.MODEL_PROVIDER == "groq":
+            max_parallel = int(os.getenv("RCA_MAX_PARALLEL", "2"))
+            jobs_to_run  = failed_jobs[:max_parallel]
+        else:
+            jobs_to_run = failed_jobs
+
         return [
-            Send("rca", {**state, "failed_jobs": [job]})
-            for job in failed_jobs
+            Send("rca_subgraph", {
+                **state,
+                "failed_jobs":      [job],
+                "rca_current_jobs": [job],
+                "rca_eval_pending": [],
+                "rca_eval_done":    [],
+            })
+            for job in jobs_to_run
         ]
 
     def _route_after_evaluator(
         self, state: SupervisorState,
-    ) -> Literal["rca", "incident", "end"]:
-        """Retry loop back to rca if pending, else proceed to incident or end."""
-        if state.get("rca_eval_pending"):
-            return "rca"
+    ) -> Literal["incident", "end"]:
+        """Route after evaluator fan-in. Retry loop now happens inside _rca_node."""
         task = state.get("task", "")
         if task == "monitor_analyze_incident" and state.get("rca_results"):
             return "incident"
@@ -535,6 +512,7 @@ class SupervisorAgent:
         node_markers = {
             "monitor":       "Monitor Agent completed",
             "rca_fan_out":   "fanning out RCA",
+            "rca_subgraph":  "RCA Subgraph",
             "rca_evaluator": "RCA Evaluator:",
             "incident":      "Incident Agent",
         }
@@ -559,26 +537,19 @@ class SupervisorAgent:
         # Fan-out degree from state (stored by _rca_fan_out_node)
         fan_out_degree = self._last_fan_out_degree
 
-        hidden_nodes = {"rca"}
+        hidden_nodes = set()  # rca_subgraph is now a real visible node
         skip_edges = {
-            ("rca_fan_out",   "rca"),
-            ("rca",           "rca_evaluator"),
-            ("rca_evaluator", "rca"),
-            # Replace with injected dotted version below
-            ("rca_evaluator", "incident"),
+            ("rca_fan_out",  "rca_subgraph"),  # replaced by injected edge with fan-out label
+            ("rca_evaluator", "rca"),           # old retry edge no longer in graph
         }
 
-        rca_visited      = "rca_fan_out" in visited_nodes
+        rca_visited      = "rca_subgraph" in visited_nodes or "rca_fan_out" in visited_nodes
         incident_visited = "incident" in visited_nodes
-        fan_label        = f"×{fan_out_degree} parallel" if fan_out_degree else "×N parallel"
-        retry_happened   = any("retry" in e for e in getattr(self, "_last_execution_log", []))
+        fan_label        = f"x{fan_out_degree} parallel" if fan_out_degree else "xN parallel"
         injected_edges = [
-            # rca_fan_out → rca_evaluator (solid when visited)
-            ("rca_fan_out",   "rca_evaluator", fan_label, False, rca_visited),
-            # rca_evaluator → rca_fan_out retry (dashed, active only when retry happened)
-            ("rca_evaluator", "rca_fan_out",   "retry",   True,  retry_happened),
-            # rca_evaluator → incident (dashed conditional — always shown, active when visited)
-            ("rca_evaluator", "incident",      "",        True,  incident_visited),
+            ("rca_fan_out",   "rca_subgraph",  fan_label, False, rca_visited),
+            ("rca_subgraph",  "rca_evaluator", "",       False, rca_visited),
+            ("rca_evaluator", "incident",      "",       True,  incident_visited),
         ]
 
         lines = [
@@ -646,6 +617,7 @@ class SupervisorAgent:
             "rca_results":      [],
             "rca_eval_pending": [],
             "rca_eval_done":    [],
+            "rca_current_jobs": [],
             "incident_results": [],
             "agent_results":    [],
             "execution_log":    [],
@@ -688,6 +660,109 @@ class SupervisorAgent:
             except Exception:
                 pass
             return final_state
+        finally:
+            if langfuse_handler and Config.LANGFUSE_ENABLED:
+                try:
+                    from langfuse import Langfuse
+                    Langfuse(
+                        public_key=Config.LANGFUSE_PUBLIC_KEY,
+                        secret_key=Config.LANGFUSE_SECRET_KEY,
+                        host=Config.LANGFUSE_HOST,
+                    ).flush()
+                except Exception:
+                    pass
+
+    def stream_monitoring_workflow(
+        self,
+        task: str = "monitor_and_analyze",
+        session_id: str | None = None,
+    ):
+        """Stream workflow state updates node by node.
+
+        Yields dicts of the form:
+          {"node": "<node_name>", "state": <partial_state_dict>}
+
+        The final yield has node="__end__" and contains the complete final state.
+        Yields {"node": "__interrupt__", "state": state} when HITL pause is hit.
+        """
+        initial_state: SupervisorState = {
+            "task":             task,
+            "workflow_run_id":  session_id or generate_session_id(prefix="etl_monitoring"),
+            "jobs_data":        {},
+            "failed_jobs":      [],
+            "monitor_summary":  "",
+            "rca_results":      [],
+            "rca_eval_pending": [],
+            "rca_eval_done":    [],
+            "rca_current_jobs": [],
+            "incident_results": [],
+            "agent_results":    [],
+            "execution_log":    [],
+            "next_agent":       "",
+            "workflow_status":  "queued",
+            "error":            "",
+        }
+        session_id = initial_state["workflow_run_id"]
+        try:
+            self.workflow_store.start_run(run_id=session_id, task=task)
+        except Exception:
+            pass
+
+        langfuse_handler = get_agent_handler(
+            agent_name=self.name,
+            session_id=session_id,
+            additional_tags=["workflow_orchestration"],
+        )
+        graph_config = {
+            "callbacks":    [langfuse_handler] if langfuse_handler else [],
+            "metadata":     {"langfuse_session_id": session_id, "langfuse_trace_name": f"{self.name}: {task}"},
+            "tags":         ["workflow_orchestration"],
+            "configurable": {"thread_id": session_id},
+        }
+
+        accumulated: dict[str, Any] = dict(initial_state)
+
+        try:
+            for chunk in self.workflow.stream(
+                input=initial_state,
+                config=graph_config,
+                stream_mode="updates",
+            ):
+                # chunk is {node_name: partial_state_update}
+                for node_name, update in chunk.items():
+                    if node_name == "__interrupt__":
+                        accumulated["__interrupt__"] = update
+                        yield {"node": "__interrupt__", "state": dict(accumulated)}
+                        return
+
+                    # Merge update into accumulated state
+                    for k, v in update.items():
+                        if isinstance(v, list) and isinstance(accumulated.get(k), list):
+                            accumulated[k] = accumulated.get(k, []) + v
+                        else:
+                            accumulated[k] = v
+
+                    yield {"node": node_name, "state": dict(accumulated)}
+
+            # Final state post-stream
+            workflow_path = self._workflow_path(accumulated)
+            self._last_execution_log = accumulated.get("execution_log", [])
+            accumulated["workflow_graph"] = self._workflow_graph_dot(workflow_path)
+            is_interrupted = bool(accumulated.get("__interrupt__"))
+            accumulated["workflow_status"] = "awaiting_review" if is_interrupted else "completed"
+            accumulated["workflow_run_id"] = session_id
+
+            try:
+                self.workflow_store.update_run(
+                    run_id=session_id,
+                    status=accumulated["workflow_status"],
+                    final_summary=f"workflow completed for '{task}'",
+                )
+            except Exception:
+                pass
+
+            yield {"node": "__end__", "state": accumulated}
+
         finally:
             if langfuse_handler and Config.LANGFUSE_ENABLED:
                 try:

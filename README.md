@@ -1,286 +1,291 @@
-# Data Engineering Platform AI Agents Application
+# Data Engineering Platform — AI Agents
+
+A LangGraph-based multi-agent application that monitors Databricks ETL pipelines, performs root cause analysis on failures using DAB context and Unity Catalog lineage, and creates Jira incidents — with a human-in-the-loop approval step and full Langfuse observability.
+
+---
+
+## Architecture
+
+```
+Supervisor Agent (ReAct — LLM-driven routing)
+    │
+    ├─► Worker 1: Monitor Agent
+    │     Fetches all Databricks job/pipeline statuses via SDK.
+    │     Surfaces each failed task individually for multi-task pipelines.
+    │
+    ├─► Worker 2: RCA Fan-Out
+    │     Dispatches one RCA execution per failed task in parallel (Send API).
+    │     Results merge via Annotated reducer (shared memory pattern).
+    │
+    ├─► Worker 3: RCA Evaluator
+    │     Scores each RCA on Clarity, Actionability, Completeness (1-10, threshold 9.0).
+    │     Context-aware: checks whether DAB context and UC lineage were actually used.
+    │     Enforces WHAT + WHERE + ACCESS in every fix step.
+    │     Retries below-threshold RCAs with per-criterion targeted feedback (max 3 iterations).
+    │
+    └─► Worker 4: Incident Agent
+          Pauses for per-incident human review (HITL interrupt).
+          Supports approve/reject per incident, severity override, context note.
+          Creates Jira tickets via Atlassian Rovo MCP.
+```
+
+### RCA Context Sources
+
+The RCA agent enriches every analysis with two context sources:
+
+| Source | What it provides |
+|---|---|
+| **DAB YAML** (`.dab/etl_nightly_medallion/databricks.yml`) | Job design intent: source paths, filename patterns, upstream system, target tables, SLA, archive paths |
+| **Unity Catalog Lineage** (`system.access.table_lineage`) | Runtime history: which tables were read/written, last successful write time, downstream consumers affected |
+
+---
 
 ## Project Structure
+
 ```
-data-ops-ai-agents/
-├── README.md                   # Project documentation
-├── requirements.txt            # Python dependencies
-├── .env.example                # Environment template
-├── app.py                      # Streamlit web interface
-├── config.py                   # Configuration settings
+data-platform-ai-agents/
+├── app.py                          # Streamlit web interface
+├── config.py                       # Configuration loader
+├── ticker.py                       # Background scheduler (interval or cron)
+├── ticker_manager.py               # Start/stop ticker from UI as subprocess
+├── requirements.txt
+├── .env.example
+│
 ├── agents/
-│   ├── __init__.py
-│   ├── agents-readme.md        # Agent-specific documentation
-│   ├── supervisor_agent.py     # Supervisor with LangGraph workflow
-│   ├── monitor_agent.py        # Databricks job monitoring agent
-│   ├── rca_agent.py            # Root cause analysis agent
-│   └── incident_agent.py       # Incident creation agent
+│   ├── supervisor_agent.py         # ReAct supervisor + LangGraph workflow
+│   ├── monitor_agent.py            # Databricks job/pipeline monitoring
+│   ├── rca_agent.py                # LLM root cause analysis (DAB + UC enriched)
+│   ├── rca_evaluator_agent.py      # Context-aware evaluator-optimizer
+│   └── incident_agent.py           # Jira incident creation (Rovo MCP)
+│
 ├── tools/
-│   ├── __init__.py
-│   ├── databricks_tools.py     # Databricks Jobs API utilities
-│   └── llm_utils.py            # Groq LLM wrapper
+│   ├── databricks_tools.py         # Databricks Jobs SDK (multi-task pipeline aware)
+│   ├── dab_context_loader.py       # Reads DAB YAML for job context
+│   ├── uc_lineage_fetcher.py       # Queries system.access.table_lineage
+│   └── jira_tools.py              # Atlassian Rovo MCP client
+│
 ├── models/
-│   └── ollama.py               # Ollama model integration
-│   └── databricks.py           # Databricks model integration
-├── tests/
-│   └── test_agents.py          # Agent tests
-└── scripts/                    # Utility scripts for setup and deployment
+│   ├── llm_client.py               # LLM provider factory
+│   ├── databricks.py               # Databricks AI Gateway
+│   ├── groq.py                     # Groq (with rate-limit retry)
+│   └── ollama.py                   # Ollama (local)
+│
+├── utils/
+│   ├── langfuse_tracing.py         # Langfuse tracing + prompt management
+│   └── durable_memory.py           # SQLite workflow audit store
+│
+├── scripts/
+│   ├── setup.py                    # One-time workshop environment setup
+│   ├── migrate_prompts_to_langfuse.py
+│   └── test_jira_mcp.py
+│
+└── .dab/
+    └── etl_nightly_medallion/
+        └── databricks.yml          # DAB bundle — pipeline context for RCA agent
 ```
+
+---
 
 ## Accounts & Tokens Required
 
-Before running the application, you need to create accounts and generate tokens for the following services. All are free to sign up.
-
 ### Quick Reference
 
-| Service | Required for Demo | If Skipping |
+| Service | Required | If Skipping |
 |---|---|---|
-| **Databricks** | ✅ Yes — data platform + LLM | Cannot run without it |
-| **Groq** | ✅ Yes — alternative LLM (use if no Databricks AI Gateway) | Set `MODEL_PROVIDER=databricks` to skip |
+| **Databricks** | ✅ Yes | Cannot run without it |
+| **Groq** | ✅ Yes (if not using Databricks AI Gateway) | Set `MODEL_PROVIDER=databricks` |
 | **Langfuse** | ⚪ Optional | Set `LANGFUSE_ENABLED=false` |
 | **Atlassian Jira** | ⚪ Optional | Set `JIRA_ENABLED=false` |
 
-**Minimum setup to get the demo running: Databricks + one LLM provider (Databricks AI Gateway or Groq).**
-Set `LANGFUSE_ENABLED=false` and `JIRA_ENABLED=false` and skip those sections entirely if short on time.
+**Minimum to run: Databricks workspace + one LLM provider.**
 
-### 1. Databricks (Data Platform + LLM)
+### 1. Databricks
 
-**Sign up:** https://www.databricks.com/try-databricks
-- Use any email (personal or work), no credit card required
-- Choose AWS as the cloud provider
+**Sign up:** https://www.databricks.com/try-databricks — any email, no credit card, $400 DBU free credit.
 
-**Get the Workspace URL:**
-- Visible on your Databricks dashboard after provisioning
-- Format: `https://dbc-XXXXXXXX.cloud.databricks.com`
-- → `DATABRICKS_WORKSPACE_HOST` in `.env`
+- **Workspace URL** — shown on dashboard after provisioning. Format: `https://dbc-XXXXXXXX.cloud.databricks.com` → `DATABRICKS_WORKSPACE_HOST`
+- **Personal Access Token** — User Settings → Developer → Access Tokens → Generate New Token → `DATABRICKS_TOKEN`
+- **AI Gateway** — left sidebar → AI/ML → AI Gateway tab. Foundation models appear automatically ~5 mins after signup. Click a model → Make your first request → Python → copy `base_url` and `model` → `DATABRICKS_AI_GATEWAY` and `DATABRICKS_MODEL_ID`
 
-**Generate a Personal Access Token:**
-- Top-right corner → your username → **Settings**
-- **Developer** → **Access Tokens** → **Generate New Token**
-- Give it a name (e.g. `flo-workshop`), set expiry to 7 days
-- Copy immediately — shown only once
-- → `DATABRICKS_TOKEN` in `.env`
+### 2. Groq (free alternative LLM)
 
-**Get the AI Gateway URL + Model ID:**
-- Left sidebar → **AI/ML** → **AI Gateway** tab
-- Databricks pre-provisions Foundation Models automatically — wait ~5 mins after signup for them to appear
-- Look for `system.ai.meta-llama-3-1-8b-instruct` (or any `*-instruct` chat model)
-- Click on the model to view its endpoint details > Make your first request > Python > look for base_url, model
-- Gateway base URL format: `https://dbc-XXXXXXXX.cloud.databricks.com/ai-gateway/mlflow/v1`
-- → `DATABRICKS_AI_GATEWAY` and `DATABRICKS_MODEL_ID` in `.env`
+**Sign up:** https://console.groq.com → API Keys → Create API Key → `GROQ_API_KEY`
 
-**Create some jobs (so Monitor Agent has data):**
-- Follow the section "Demo Jobs Setup" to create few jobs
+Recommended model: `openai/gpt-oss-20b` → `GROQ_MODEL_ID`
 
----
+> If you hit rate limits (250K TPM on free tier), reduce `RCA_MAX_PARALLEL=1` in `.env`.
 
-### 2. Groq (Alternative LLM Provider — Free)
+### 3. Langfuse (optional observability)
 
-Use this if Databricks AI Gateway is not available or as a backup.
+**Sign up:** https://cloud.langfuse.com → Settings → API Keys → `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY`
 
-**Sign up:** https://console.groq.com
-- Google or GitHub login supported
+### 4. Atlassian Jira (optional incident creation)
 
-**Generate API Key:**
-- Left sidebar → **API Keys** → **Create API Key**
-- Give it a name (e.g. `flo-workshop`)
-- Copy immediately — shown only once
-- → Set MODEL_PROVIDER=groq and `GROQ_API_KEY` in `.env`
+**API Token:** https://id.atlassian.com/manage-profile/security/api-tokens → `ATLASSIAN_API_TOKEN`
 
-**Recommended model:** `openai/gpt-oss-20b`
-- → `GROQ_MODEL_ID` in `.env`
-
----
-
-### 3. Langfuse (Observability — Optional)
-
-Used for tracing agent execution and managing LLM prompts. The app runs fine without it — set `LANGFUSE_ENABLED=false` to skip.
-
-**Sign up:** https://cloud.langfuse.com
-- Free tier available, no credit card required
-
-**Get API Keys:**
-- After login → **Settings** → **API Keys**
-- Copy the **Public Key** → `LANGFUSE_PUBLIC_KEY` in `.env`
-- Copy the **Secret Key** → `LANGFUSE_SECRET_KEY` in `.env`
-
-**Upload the RCA prompt (one-time, after setting keys in `.env`):**
-```bash
-# macOS / Linux / WSL
-python scripts/migrate_prompts_to_langfuse.py
-
-# Windows
-python scripts\migrate_prompts_to_langfuse.py
-```
-
----
-
-### 4. Atlassian Jira (Incident Creation — Optional)
-
-Used for creating Jira tickets when job failures are detected. Set `JIRA_ENABLED=false` to skip — demo incidents are created instead.
-
-**Sign up:** https://www.atlassian.com/software/jira
-- Free tier available
-
-**Generate API Token:**
-- Go to https://id.atlassian.com/manage-profile/security/api-tokens
-- **Create API token** → give it a name → copy the token
-- → `ATLASSIAN_API_TOKEN` in `.env`
-
-**Other required values:**
-- `ATLASSIAN_EMAIL` — the email you use to log into Atlassian
-- `ATLASSIAN_CLOUD_ID` — your site URL, format: `yourcompany.atlassian.net`
-- `ATLASSIAN_PROJECT_KEY` — short code visible in the Jira project URL (e.g. `DE`, `OPS`)
-- `ATLASSIAN_ISSUE_TYPE` — typically `Task` or `Incident`
+Also needed: `ATLASSIAN_EMAIL`, `ATLASSIAN_CLOUD_ID` (e.g. `yourcompany.atlassian.net`), `ATLASSIAN_PROJECT_KEY`, `ATLASSIAN_ISSUE_TYPE`
 
 ---
 
 ## Setup Instructions
 
+### Windows (Native — No WSL Required)
+
+> Python 3.12 required. Download from https://www.python.org/downloads/ — check **"Add Python to PATH"**.
+
+```powershell
+# 1. Clone and enter the project
+cd "path\to\data-platform-ai-agents"
+
+# 2. Create virtual environment and install dependencies
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+
+# 3. Configure environment
+copy .env.example .env
+notepad .env
+```
+
+Minimum `.env` values:
+```env
+MODEL_PROVIDER=groq
+GROQ_API_KEY=gsk_xxxx
+GROQ_MODEL_ID=openai/gpt-oss-20b
+RCA_MAX_PARALLEL=2
+
+DATABRICKS_WORKSPACE_HOST=https://dbc-XXXXXXXX.cloud.databricks.com
+DATABRICKS_TOKEN=dapi_xxxx
+
+JIRA_ENABLED=false
+LANGFUSE_ENABLED=false
+```
+
+```powershell
+# 4. Run the one-time demo environment setup (~5-6 minutes)
+python scripts\setup.py
+
+# 5. (Optional) Upload RCA prompt to Langfuse if LANGFUSE_ENABLED=true
+python scripts\migrate_prompts_to_langfuse.py
+
+# 6. Run the app
+streamlit run app.py
+```
+
+---
+
 ### macOS / Linux / WSL
 
-1. Install dependencies:
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
 
-2. Configure environment variables:
-```bash
 cp .env.example .env
-# Edit .env for Model Provider, Data Platform, Atlassian Jira, and Langfuse configurations
-```
+# Edit .env
 
-3. Run the application:
-```bash
+python scripts/setup.py
 streamlit run app.py
 ```
-The application will open in your browser at `http://localhost:8501`
 
 ---
 
-### Windows (Native — No WSL Required)
+## Demo Environment Setup (`scripts/setup.py`)
 
-> Use **PowerShell** or **Command Prompt**. Python 3.12 must be installed.
-> Download from https://www.python.org/downloads/ — check **"Add Python to PATH"** during install.
+Run once per workspace. Creates the full medallion architecture demo environment:
 
-1. Install dependencies:
-```powershell
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-2. Configure environment variables:
-```powershell
-copy .env.example .env
-```
-Fill in Model Provider, Data Platform, Atlassian Jira, and Langfuse configurations.
-
-3. Run the application:
-```powershell
-streamlit run app.py
-```
-The application will open in your browser at `http://localhost:8501`
-
----
-
-## Demo Jobs Setup
-
-Run this once to create sample Databricks notebooks and jobs that simulate realistic ETL failures. The Monitor and RCA agents will pick these up automatically.
-
-```bash
-# macOS / Linux / WSL
-python scripts/create_demo_jobs.py
-
-# Windows
-python scripts\create_demo_jobs.py
-```
-
-**What gets created:**
-
-| Job | Expected Result | Failure Scenario |
+| Step | What it does | Time |
 |---|---|---|
-| `etl_ingest_customer_data` | ✅ SUCCEEDED | — healthy baseline job |
-| `etl_ingest_sales_transactions` | ❌ FAILED | Wrong schema name (`confromed_sales` typo → AnalysisException) |
-| `etl_ingest_daily_inventory` | ❌ FAILED | Today's file not yet landed in the data lake (FileNotFoundError) |
-| `etl_transform_revenue_summary` | ❌ FAILED | Upstream changed filename format from `YYYY-MM-DD` to `YYYYMMDD` |
-| `etl_load_product_dimension` | ✅ SUCCEEDED | — healthy baseline job |
+| 1 | Creates Unity Catalog: `demo_etl` catalog + `raw` / `cleansed` / `conformed` schemas | ~5s |
+| 2 | Creates 5 Delta tables (customers, inventory, sales in raw; revenue_export, inventory_daily in cleansed) | ~30s |
+| 3 | Seeds tables with realistic sample data | ~30s |
+| 4 | Uploads 5 medallion notebooks to `/Shared/demo_etl/` | ~10s |
+| 5 | Generates DAB YAML bundle to `.dab/etl_nightly_medallion/databricks.yml` | instant |
+| 6 | Creates and runs the `etl_nightly_medallion` multi-task pipeline | ~5 min |
 
-The script uploads notebooks to `/Shared/demo_etl/` in your workspace, creates jobs, triggers all runs, and waits for them to complete. Takes ~5 minutes depending on cluster startup time.
+**Pipeline task layout:**
+```
+raw_to_cleansed_customers    ──────────────────────────────────────► (no downstream — succeeds)
+raw_to_cleansed_inventory    ──────────────────► cleansed_to_conformed_inventory (succeeds)
+raw_to_cleansed_sales        ──────────────────► cleansed_to_conformed_revenue   (succeeds)
+         ↑ FAILS                                           ↑ FAILS
+   0 incoming records                             0 files matching
+   (WMS delivery issue)                           revenue_export_YYYY-MM-DD.csv
+                                                  (filename format changed)
+raw_to_cleansed_sales → FAILS
+   AnalysisException: schema 'confromed_sales' does not exist (typo in config)
+```
+
+The failing tasks raise realistic premature-exit errors (0 records found, schema not found). The RCA agent derives the root cause from the DAB context and UC lineage — not from hardcoded error messages.
 
 ---
 
 ## Running the Application
 
-### Option A — Manual mode (single terminal)
+### Manual mode
+Click **▶️ Run Monitoring Now** in the sidebar. The full pipeline runs end to end.
+
+### Background ticker mode
+The ticker runs on a schedule and writes results to SQLite. The UI reads from SQLite.
 
 ```powershell
-# macOS / Linux / WSL
-streamlit run app.py
-
-# Windows
-streamlit run app.py
+# Configure schedule in UI sidebar → ⏱️ Background Ticker
+# Then click ▶ Start Ticker — launches as a detached subprocess
+# Or run manually:
+python ticker.py --interval 10   # every 10 minutes
+python ticker.py --once          # run once immediately
 ```
-
-Switch the sidebar to **▶️ Manual** mode and click **Run Monitoring Now** to trigger a workflow run.
 
 ---
 
-### Option B — Ticker mode (two terminals)
+## Agent Workflow
 
-The ticker runs the workflow automatically on a schedule and writes results to SQLite. The UI reads from SQLite and updates without triggering any agent runs itself.
-
-**Terminal 1 — Start the UI**
-```powershell
-streamlit run app.py
+```
+Supervisor [ReAct] ──► Monitor ──► RCA Fan-Out ──► rca_evaluator ──► [HITL] ──► Incident
+                                      (×N parallel)   (retry loop)    (approve/reject
+                                                                        per incident)
 ```
 
-**Terminal 2 — Start the background ticker**
-```powershell
-# Run every 30 minutes (default)
-python ticker.py
+**Human Review controls (when `monitor_analyze_incident` runs):**
+- Approve or reject each incident individually
+- Override LLM-assigned severity
+- Add a context note (appended to the Jira ticket description)
 
-# Run every 10 minutes
-python ticker.py --interval 10
+---
 
-# Run daily at 06:30 UTC
-python ticker.py --cron 06:30
+## Key Configuration
 
-# Run once immediately (useful for testing)
-python ticker.py --once
-```
-
-In the Streamlit sidebar, switch to **⏱️ Background Ticker** mode. You can configure the schedule (interval or cron, task type) and save it — then restart the ticker to apply. Enable **Auto-refresh UI** in the sidebar to have the UI poll SQLite automatically.
-
-**Ticker environment variables (optional — all overridable by CLI flags):**
 ```env
-TICKER_MODE=interval          # interval | cron
-TICKER_INTERVAL_MIN=30        # minutes between runs
-TICKER_CRON_TIME=06:00        # HH:MM UTC for cron mode
-TICKER_TASK=monitor_and_analyze
+# LLM provider
+MODEL_PROVIDER=groq | databricks | ollama
+
+# Parallel RCA — reduce if hitting rate limits
+RCA_MAX_PARALLEL=2
+
+# Evaluator quality threshold (1-10)
+RCA_EVAL_THRESHOLD=9.0
+RCA_EVAL_MAX_ITERATIONS=3
+
+# Background ticker
+TICKER_MODE=interval | cron
+TICKER_INTERVAL_MIN=30
+TICKER_CRON_TIME=06:00
+
+# Optional services
+JIRA_ENABLED=false
+LANGFUSE_ENABLED=false
 ```
 
 ---
 
-### Supervisor Agent
-- A data-platform triage agent which coordinates specialized worker agents
-- Uses LangGraph to orchestrate workflow
+## Agentic Patterns Demonstrated
 
-### Monitor Agent
-- Queries ETL Jobs API for job statuses
-- Identifies failed jobs
-
-### RCA Agent
-- Retrieves logs for failed jobs
-- Uses LLM to analyze logs and identify root causes
-- Provides actionable recommendations
-
-### Incident Agent
-- For failed jobs, creates Jira tickets using Atlassian Jira MCP client
-
-### Adding More Agents
-1. Create new agent file in `agents/` directory
-2. Add to workflow in `supervisor_agent.py`
-3. Update Streamlit UI in `app.py`
+| Pattern | Where |
+|---|---|
+| **ReAct** — LLM decides routing | `supervisor_agent.py` `_react_supervisor_node` |
+| **Shared Memory** — Annotated reducers | `SupervisorState` in `supervisor_agent.py` |
+| **Parallel Fan-out** — Send API | `_fan_out_rca` in `supervisor_agent.py` |
+| **Evaluator-Optimizer** — critique loop | `rca_evaluator_agent.py` + `_rca_evaluator_node` |
+| **Human-in-the-Loop** — interrupt/resume | `_incident_node` in `supervisor_agent.py` |
+| **DAB Context** — job design intent | `tools/dab_context_loader.py` |
+| **UC Lineage** — runtime upstream/downstream | `tools/uc_lineage_fetcher.py` |

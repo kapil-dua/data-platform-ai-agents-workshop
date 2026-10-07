@@ -42,7 +42,12 @@ class MonitorAgent:
 
             # Get all jobs status
             all_jobs = self.databricks_client.get_all_jobs_status()
-            failed_jobs = [job for job in all_jobs if job['status'] == 'FAILED']
+            # For multi-task pipelines, only include individual task failures (not the pipeline-level entry)
+            # The pipeline-level entry is for display only — task entries have the actionable detail
+            failed_jobs = [
+                job for job in all_jobs
+                if job['status'] == 'FAILED' and not (job.get('is_pipeline') and not job.get('is_task'))
+            ]
 
             # Format data for LLM analysis
             jobs_summary = self.databricks_client.format_job_status_summary(all_jobs)

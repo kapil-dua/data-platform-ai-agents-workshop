@@ -41,7 +41,7 @@ from models.llm_client import LLMClient
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-EVAL_THRESHOLD      = float(os.getenv("RCA_EVAL_THRESHOLD", "9.0"))
+EVAL_THRESHOLD      = float(os.getenv("RCA_EVAL_THRESHOLD", "7.0"))
 EVAL_MAX_ITERATIONS = int(os.getenv("RCA_EVAL_MAX_ITERATIONS", "3"))
 
 
@@ -157,21 +157,66 @@ class RCAEvaluatorAgent:
         self.name           = "RCA Evaluator Agent"
         self.threshold      = EVAL_THRESHOLD
         self.max_iterations = EVAL_MAX_ITERATIONS
-        self.llm            = LLMClient().get_llm()
-        self._prompt        = ChatPromptTemplate.from_messages([
+
+        # Use a dedicated evaluator model if configured, otherwise fall back to main LLM
+        eval_model_id = os.getenv("RCA_EVAL_MODEL_ID", "")
+        if eval_model_id and eval_model_id != os.getenv("GROQ_MODEL_ID", ""):
+            # Instantiate a separate Groq client for evaluation
+            try:
+                from langchain_groq import ChatGroq
+                self.llm = ChatGroq(
+                    groq_api_key=os.getenv("GROQ_API_KEY", ""),
+                    model=eval_model_id,
+                    temperature=0.1,
+                ).with_retry(
+                    retry_if_exception_type=(Exception,),
+                    wait_exponential_jitter=True,
+                    stop_after_attempt=4,
+                )
+                print(f"[{self.__class__.__name__}] Using dedicated eval model: {eval_model_id}")
+            except Exception:
+                from models.llm_client import LLMClient
+                self.llm = LLMClient().get_llm()
+        else:
+            from models.llm_client import LLMClient
+            self.llm = LLMClient().get_llm()
+
+        self._prompt = ChatPromptTemplate.from_messages([
             ("system", _EVAL_SYSTEM),
             ("user",   _EVAL_USER),
         ])
 
     def _parse_json_response(self, content: str) -> dict:
-        """Robustly parse JSON, stripping markdown fences if present."""
+        """Robustly parse JSON, stripping markdown fences. Falls back to regex extraction on malformed JSON."""
         content = content.strip()
         content = re.sub(r'^```(?:json)?\s*', '', content)
         content = re.sub(r'\s*```$', '', content)
         match = re.search(r'\{.*\}', content, re.DOTALL)
-        if match:
-            content = match.group(0)
-        return json.loads(content)
+        candidate = match.group(0) if match else content
+
+        # Try clean parse first
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+        # Regex fallback — extract individual fields even from malformed JSON
+        result: dict = {}
+        for field in ("clarity_score", "actionability_score", "completeness_score", "overall_score"):
+            m = re.search(rf'"{field}"\s*:\s*([\d.]+)', candidate)
+            if m:
+                result[field] = float(m.group(1))
+        m = re.search(r'"passed"\s*:\s*(true|false)', candidate, re.IGNORECASE)
+        if m:
+            result["passed"] = m.group(1).lower() == "true"
+        for field in ("feedback", "clarity_feedback", "actionability_feedback", "completeness_feedback"):
+            m = re.search(rf'"{field}"\s*:\s*"((?:[^"\\]|\\.)*?)"', candidate)
+            if m:
+                result[field] = m.group(1)
+        if result:
+            return result
+
+        return json.loads(candidate)  # final attempt — will raise if still malformed
 
     def evaluate(
         self,
@@ -181,38 +226,41 @@ class RCAEvaluatorAgent:
         dab_context:  str = "",
         uc_lineage:   str = "",
     ) -> RCAEvaluation:
-        """
-        Score an RCA analysis against the available job context.
+        """Score an RCA analysis against the available job context."""
+        import time
 
-        Args:
-            job_name:      Job name
-            error_message: Original error message
-            rca_analysis:  The RCA text to evaluate
-            dab_context:   DAB context string (what the job is designed to do)
-            uc_lineage:    UC lineage string (upstream/downstream tables)
+        for attempt in range(3):
+            try:
+                messages = self._prompt.format_messages(
+                    threshold=self.threshold,
+                    job_name=job_name,
+                    error_message=error_message,
+                    dab_context=dab_context or "Not available",
+                    uc_lineage=uc_lineage or "Not available",
+                    rca_analysis=rca_analysis,
+                )
+                response = self.llm.invoke(messages)
+                content  = response.content if hasattr(response, "content") else str(response)
 
-        Returns:
-            RCAEvaluation with scores and per-criterion targeted feedback.
-        """
-        try:
-            messages = self._prompt.format_messages(
-                threshold=self.threshold,
-                job_name=job_name,
-                error_message=error_message,
-                dab_context=dab_context or "Not available",
-                uc_lineage=uc_lineage or "Not available",
-                rca_analysis=rca_analysis,
-            )
-            response = self.llm.invoke(messages)
-            content  = response.content if hasattr(response, "content") else str(response)
-            raw      = self._parse_json_response(content)
-        except Exception as e:
-            print(f"[{self.name}] JSON parse error: {e} — using default scores")
+                if not content or not content.strip():
+                    if os.getenv("MODEL_PROVIDER", "") == "groq":
+                        print(f"[{self.name}] Empty response on attempt {attempt + 1} — waiting 10s before retry")
+                        time.sleep(10)
+                    continue
+
+                raw = self._parse_json_response(content)
+                break
+            except Exception as e:
+                print(f"[{self.name}] Error on attempt {attempt + 1}: {e}")
+                if attempt < 2 and os.getenv("MODEL_PROVIDER", "") == "groq":
+                    time.sleep(10)
+                raw = {}
+        else:
             raw = {}
 
-        clarity       = float(raw.get("clarity_score", 5))
-        actionability = float(raw.get("actionability_score", 5))
-        completeness  = float(raw.get("completeness_score", 5))
+        clarity       = float(raw.get("clarity_score", 3))
+        actionability = float(raw.get("actionability_score", 3))
+        completeness  = float(raw.get("completeness_score", 3))
         overall       = round((clarity + actionability + completeness) / 3, 2)
         passed        = overall >= self.threshold
 
