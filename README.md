@@ -99,7 +99,71 @@ data-platform-ai-agents/
 
 **Minimum to run: Databricks workspace + one LLM provider.**
 
-### 1. Databricks
+
+## 1. Setup Instructions
+
+### macOS / Linux / WSL
+
+1. Install dependencies:
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+2. Configure environment variables file:
+```bash
+cp .env.example .env
+```
+> Fill in Model Provider, Data Platform, Atlassian Jira, and Langfuse configurations - follow the section "2. Dependency Setup"
+
+
+3. Run the dependency scripts (one-time setup):
+>  Follow the section "2. Dependency Setup"
+
+
+4. Run the application:
+```bash
+streamlit run app.py
+```
+The application will open in your browser at `http://localhost:8501`
+
+---
+
+### Windows (Native — No WSL Required)
+
+> Use **PowerShell** or **Command Prompt**. Python 3.12 must be installed.
+> Download from https://www.python.org/downloads/ — check **"Add Python to PATH"** during install.
+
+1. Install dependencies:
+```powershell
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+2. Configure environment variables file:
+```powershell
+copy .env.example .env
+```
+> Fill in Model Provider, Data Platform, Atlassian Jira, and Langfuse configurations - follow the section "2. Dependency Setup"
+
+
+3. Run the dependency scripts (one-time setup):
+> Follow the section "2. Dependency Setup"
+
+
+4. Run the application:
+```powershell
+streamlit run app.py
+```
+The application will open in your browser at `http://localhost:8501`
+
+---
+
+## 2. Dependency Setup
+
+### Databricks (Data Platform + LLM)
 
 **Sign up:** https://www.databricks.com/try-databricks — any email, no credit card, $400 DBU free credit.
 
@@ -111,90 +175,20 @@ data-platform-ai-agents/
 
 **Sign up:** https://console.groq.com → API Keys → Create API Key → `GROQ_API_KEY`
 
-Recommended model: `openai/gpt-oss-20b` → `GROQ_MODEL_ID`
-
-> If you hit rate limits (250K TPM on free tier), reduce `RCA_MAX_PARALLEL=1` in `.env`.
-
-### 3. Langfuse (optional observability)
-
-**Sign up:** https://cloud.langfuse.com → Settings → API Keys → `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY`
-
-### 4. Atlassian Jira (optional incident creation)
-
-**API Token:** https://id.atlassian.com/manage-profile/security/api-tokens → `ATLASSIAN_API_TOKEN`
-
-Also needed: `ATLASSIAN_EMAIL`, `ATLASSIAN_CLOUD_ID` (e.g. `yourcompany.atlassian.net`), `ATLASSIAN_PROJECT_KEY`, `ATLASSIAN_ISSUE_TYPE`
-
----
-
-## Setup Instructions
-
-### Windows (Native — No WSL Required)
-
-> Python 3.12 required. Download from https://www.python.org/downloads/ — check **"Add Python to PATH"**.
-
-```powershell
-# 1. Clone and enter the project
-cd "path\to\data-platform-ai-agents"
-
-# 2. Create virtual environment and install dependencies
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-
-# 3. Configure environment
-copy .env.example .env
-notepad .env
-```
-
-Minimum `.env` values:
-```env
-MODEL_PROVIDER=groq
-GROQ_API_KEY=gsk_xxxx
-GROQ_MODEL_ID=openai/gpt-oss-20b
-RCA_MAX_PARALLEL=2
-
-DATABRICKS_WORKSPACE_HOST=https://dbc-XXXXXXXX.cloud.databricks.com
-DATABRICKS_TOKEN=dapi_xxxx
-
-JIRA_ENABLED=false
-LANGFUSE_ENABLED=false
-```
-
-```powershell
-# 4. Run the one-time demo environment setup (~5-6 minutes)
-python scripts\setup.py
-
-# 5. (Optional) Upload RCA prompt to Langfuse if LANGFUSE_ENABLED=true
-python scripts\migrate_prompts_to_langfuse.py
-
-# 6. Run the app
-streamlit run app.py
-```
-
----
-
-### macOS / Linux / WSL
+**Create some jobs (so Monitor Agent has data):**
+- Run this once to create sample Databricks notebooks and jobs that simulate realistic ETL failures. The Monitor and RCA agents will pick these up automatically.
 
 ```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+# macOS / Linux / WSL
+python scripts/create_demo_jobs.py
 
-cp .env.example .env
-# Edit .env
-
-python scripts/setup.py
-streamlit run app.py
+# Windows
+python scripts\create_demo_jobs.py
 ```
 
----
+**What gets created:**
 
-## Demo Environment Setup (`scripts/setup.py`)
-
-Run once per workspace. Creates the full medallion architecture demo environment:
-
-| Step | What it does | Time |
+| Job | Expected Result | Failure Scenario |
 |---|---|---|
 | 1 | Creates Unity Catalog: `demo_etl` catalog + `raw` / `cleansed` / `conformed` schemas | ~5s |
 | 2 | Creates 5 Delta tables (customers, inventory, sales in raw; revenue_export, inventory_daily in cleansed) | ~30s |
@@ -220,7 +214,69 @@ The failing tasks raise realistic premature-exit errors (0 records found, schema
 
 ---
 
-## Running the Application
+### Groq (Alternative LLM Provider — Free)
+
+Use this if Databricks AI Gateway is not available or as a backup.
+
+**Sign up:** https://console.groq.com
+- Google or GitHub login supported
+
+**Generate API Key:**
+- Left sidebar → **API Keys** → **Create API Key**
+- Give it a name (e.g. `flo-workshop`)
+- Copy immediately — shown only once
+- → Set MODEL_PROVIDER=groq and `GROQ_API_KEY` in `.env`
+
+**Recommended model:** `openai/gpt-oss-20b`
+- → `GROQ_MODEL_ID` in `.env`
+
+---
+
+### Langfuse (Observability — Optional)
+
+Used for tracing agent execution and managing LLM prompts. The app runs fine without it — set `LANGFUSE_ENABLED=false` to skip.
+
+**Sign up:** https://cloud.langfuse.com
+- Free tier available, no credit card required
+
+**Get API Keys:**
+- After login → **Settings** → **API Keys**
+- Copy the **Public Key** → `LANGFUSE_PUBLIC_KEY` in `.env`
+- Copy the **Secret Key** → `LANGFUSE_SECRET_KEY` in `.env`
+
+**Upload the RCA prompt (one-time, after setting keys in `.env`):**
+```bash
+# macOS / Linux / WSL
+python scripts/migrate_prompts_to_langfuse.py
+
+# Windows
+python scripts\migrate_prompts_to_langfuse.py
+```
+
+---
+
+### Atlassian Jira (Incident Creation — Optional)
+
+Used for creating Jira tickets when job failures are detected. Set `JIRA_ENABLED=false` to skip — demo incidents are created instead.
+
+**Sign up:** https://www.atlassian.com/software/jira
+- Free tier available
+
+**Generate API Token:**
+- Go to https://id.atlassian.com/manage-profile/security/api-tokens
+- **Create API token** → give it a name → copy the token
+- → `ATLASSIAN_API_TOKEN` in `.env`
+
+**Other required values:**
+- `ATLASSIAN_EMAIL` — the email you use to log into Atlassian
+- `ATLASSIAN_CLOUD_ID` — your site URL, format: `yourcompany.atlassian.net`
+- `ATLASSIAN_PROJECT_KEY` — short code visible in the Jira project URL (e.g. `DE`, `OPS`)
+- `ATLASSIAN_ISSUE_TYPE` — typically `Task` or `Incident`
+
+---
+
+
+## Running the Application options
 
 ### Manual mode
 Click **▶️ Run Monitoring Now** in the sidebar. The full pipeline runs end to end.
