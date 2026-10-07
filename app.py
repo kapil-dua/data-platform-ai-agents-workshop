@@ -93,7 +93,7 @@ def display_header():
     with col1:
         st.metric(label="🔧 Data Platform", value=Config.DATABRICKS_WORKSPACE_HOST)
     with col2:
-        st.metric(label="🤖 Active Agents", value="3", delta="Supervisor + 3 Workers")
+        st.metric(label="🤖 Active Agents", value="4", delta="Supervisor + 4 Workers")
     with col3:
         if st.session_state.last_run_time:
             st.metric(
