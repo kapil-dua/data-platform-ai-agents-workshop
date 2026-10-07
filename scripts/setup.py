@@ -215,43 +215,52 @@ def _nb_raw_to_cleansed_inventory() -> str:
 # MAGIC %md
 # MAGIC ## ETL: Raw → Cleansed Inventory
 # MAGIC Reads daily inventory CSV from ADLS, validates and writes to cleansed.inventory_daily.
-# MAGIC Expected file: inventory_YYYY-MM-DD.csv delivered by WMS at 01:00 UTC.
 
 # COMMAND ----------
 
-import datetime, re
+import datetime
 from pyspark.sql import functions as F
 
-today     = datetime.datetime.utcnow().strftime("%Y-%m-%d")
-yesterday = (datetime.datetime.utcnow() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-
-SOURCE_PATH      = "abfss://{SCHEMA_RAW}@datalake.dfs.core.windows.net/inventory/daily/"
-FILENAME_PATTERN = f"inventory_{{today}}.csv"
-EXPECTED_PATH    = f"{{SOURCE_PATH}}{{FILENAME_PATTERN}}"
-TARGET_TABLE     = "{CATALOG}.{SCHEMA_CL}.inventory_daily"
-ARCHIVE_PATH     = "abfss://{SCHEMA_RAW}@datalake.dfs.core.windows.net/inventory/archive/"
+today        = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+SOURCE_PATH  = "abfss://{SCHEMA_RAW}@datalake.dfs.core.windows.net/inventory/daily/"
+TARGET_TABLE = "{CATALOG}.{SCHEMA_CL}.inventory_daily"
 
 print(f"[{{datetime.datetime.utcnow()}}] Starting: raw → cleansed inventory")
-print(f"Expected file  : {{EXPECTED_PATH}}")
+print(f"Partition date : {{today}}")
+print(f"Source path    : {{SOURCE_PATH}}")
 print(f"Target table   : {{TARGET_TABLE}}")
-print(f"Delivery SLA   : 01:00 UTC (WMS automated export)")
-print(f"Last successful: inventory_{{yesterday}}.csv")
 
 # COMMAND ----------
 
-# Read existing raw table to register UC lineage for this job
+# Register UC lineage — read raw table before attempting file ingest
 df_raw = spark.table("{CATALOG}.{SCHEMA_RAW}.inventory_raw")
 print(f"Raw table records available: {{df_raw.count():,}}")
 
 # COMMAND ----------
 
-# Simulate: today's file has not yet landed from WMS
-raise FileNotFoundError(
-    f"FileNotFoundError: File not found: {{EXPECTED_PATH}}\\n"
-    f"The WMS export job for {{today}} has not delivered the file yet.\\n"
-    f"Last confirmed delivery: inventory_{{yesterday}}.csv\\n"
-    f"Check: SFTP landing zone /inbound/inventory/daily/ for today's file."
-)
+# Attempt to read today's incoming file
+try:
+    df_incoming = spark.read.format("csv") \\
+        .option("header", "true") \\
+        .option("inferSchema", "true") \\
+        .load(SOURCE_PATH)
+    incoming_count = df_incoming.filter(F.col("load_date") == today).count()
+except Exception as e:
+    incoming_count = 0
+    print(f"Warning: could not read source path — {{e}}")
+
+print(f"Incoming records for {{today}}: {{incoming_count}}")
+
+# COMMAND ----------
+
+# Validate: no data to process — raise premature exit
+if incoming_count == 0:
+    raise ValueError(
+        f"PrematureExit: 0 incoming records found for partition {{today}}. "
+        f"Expected > 0 records from source path {{SOURCE_PATH}}. "
+        f"Possible causes: file not delivered, file format issue, encoding error, or empty export. "
+        f"Aborting to avoid writing empty partition to {{TARGET_TABLE}}."
+    )
 """)
 
 
@@ -267,8 +276,9 @@ def _nb_raw_to_cleansed_sales() -> str:
 import datetime
 from pyspark.sql import functions as F
 
+today         = datetime.datetime.utcnow().strftime("%Y-%m-%d")
 SOURCE_TABLE  = "{CATALOG}.{SCHEMA_RAW}.sales_raw"
-TARGET_SCHEMA = "{CATALOG}.confromed_sales"          # typo: confromed not conformed
+TARGET_SCHEMA = "{CATALOG}.confromed_sales"   # typo introduced in config: confromed not conformed
 TARGET_TABLE  = f"{{TARGET_SCHEMA}}.sales_transactions"
 
 print(f"[{{datetime.datetime.utcnow()}}] Starting: raw → cleansed sales transactions")
@@ -277,11 +287,10 @@ print(f"Target : {{TARGET_TABLE}}")
 
 # COMMAND ----------
 
-# Read raw table — registers UC lineage for this job
+# Read raw table — registers UC lineage
 df_raw = spark.table(SOURCE_TABLE)
 print(f"Raw records read: {{df_raw.count():,}}")
 
-# Apply business rules
 df_clean = df_raw \\
     .filter(F.col("transaction_id").isNotNull()) \\
     .filter(F.col("amount") > 0) \\
@@ -291,7 +300,7 @@ print(f"Records after validation: {{df_clean.count():,}}")
 
 # COMMAND ----------
 
-# Write to target — schema 'confromed_sales' does not exist (typo in config)
+# Write to target — will fail if schema does not exist
 df_clean.write.format("delta") \\
     .mode("overwrite") \\
     .saveAsTable(TARGET_TABLE)
@@ -310,35 +319,54 @@ def _nb_cleansed_to_conformed_revenue() -> str:
 import datetime, re
 from pyspark.sql import functions as F
 
+today            = datetime.datetime.utcnow().strftime("%Y-%m-%d")
 SOURCE_TABLE     = "{CATALOG}.{SCHEMA_CL}.revenue_export"
 TARGET_TABLE     = "{CATALOG}.{SCHEMA_CF}.fact_revenue_daily"
 SOURCE_PATH      = "abfss://{SCHEMA_RAW}@datalake.dfs.core.windows.net/finance/revenue/"
 EXPECTED_PATTERN = r"revenue_export_(\\d{{4}}-\\d{{2}}-\\d{{2}})\\.csv"
 
-# Finance system changed format from YYYY-MM-DD to YYYYMMDD on 2026-10-03
-ACTUAL_FILE = "revenue_export_20261005.csv"
-
 print(f"[{{datetime.datetime.utcnow()}}] Starting: cleansed → conformed revenue")
-print(f"Source table   : {{SOURCE_TABLE}}")
-print(f"Target table   : {{TARGET_TABLE}}")
-print(f"Expected format: revenue_export_YYYY-MM-DD.csv")
-print(f"File found     : {{ACTUAL_FILE}}")
+print(f"Source table : {{SOURCE_TABLE}}")
+print(f"Target table : {{TARGET_TABLE}}")
+print(f"Partition    : {{today}}")
 
 # COMMAND ----------
 
 # Read cleansed table — registers UC lineage
 df_cleansed = spark.table(SOURCE_TABLE)
-print(f"Cleansed records read: {{df_cleansed.count():,}}")
+print(f"Cleansed records available: {{df_cleansed.count():,}}")
 
 # COMMAND ----------
 
-# Validate filename format before processing
-if not re.match(EXPECTED_PATTERN, ACTUAL_FILE):
+# Scan source path for today's file
+try:
+    files = [
+        f.name for f in
+        spark._jvm.org.apache.hadoop.fs.FileSystem
+            .get(spark._jsc.hadoopConfiguration())
+            .listStatus(spark._jvm.org.apache.hadoop.fs.Path(SOURCE_PATH))
+    ]
+except Exception:
+    files = []
+
+print(f"Files found in source path: {{files}}")
+
+# Filter to files matching expected pattern
+matching = [f for f in files if re.match(EXPECTED_PATTERN, f)]
+incoming_count = len(matching)
+print(f"Files matching pattern 'revenue_export_YYYY-MM-DD.csv': {{incoming_count}}")
+print(f"All files present: {{files}}")
+
+# COMMAND ----------
+
+# Validate: no matching files — raise premature exit
+if incoming_count == 0:
     raise ValueError(
-        f"ValueError: Filename '{{ACTUAL_FILE}}' does not match expected pattern "
-        f"'revenue_export_YYYY-MM-DD.csv'.\\n"
-        f"Finance system changed export format from YYYY-MM-DD to YYYYMMDD on 2026-10-03.\\n"
-        f"Last file in old format: revenue_export_2026-10-02.csv"
+        f"PrematureExit: 0 files matched pattern 'revenue_export_YYYY-MM-DD.csv' "
+        f"in {{SOURCE_PATH}} for partition {{today}}. "
+        f"Files present: {{files}}. "
+        f"Possible causes: filename format changed, file not yet delivered, or encoding issue. "
+        f"Aborting to avoid writing empty partition to {{TARGET_TABLE}}."
     )
 """)
 
