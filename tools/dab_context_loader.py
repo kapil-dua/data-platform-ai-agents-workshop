@@ -36,7 +36,7 @@ class DABContextLoader:
     def __init__(self, dab_base_path: str | None = None) -> None:
         """
         Args:
-            dab_base_path: Path to the .dab/ directory containing job bundle files.
+            dab_base_path: Path to the .dab/ directory containing databricks.yml.
                            Defaults to .dab/ relative to the project root.
         """
         if dab_base_path:
@@ -50,8 +50,7 @@ class DABContextLoader:
         Load context for a specific job or pipeline task from its DAB YAML.
 
         For multi-task pipelines, job_name may be "pipeline_name / task_key".
-        The loader first tries to find a DAB for the exact job name, then
-        falls back to finding the pipeline DAB and extracting the task config.
+        Job and task definitions are read from the shared databricks.yml.
 
         Args:
             job_name: Job name or "pipeline / task_key" format
@@ -60,21 +59,11 @@ class DABContextLoader:
             Dict with structured job context, or empty dict if not found.
         """
         # Handle "pipeline_name / task_key" format from multi-task runs
-        pipeline_name = None
         task_key      = None
         if " / " in job_name:
-            pipeline_name, task_key = job_name.split(" / ", 1)
+            _, task_key = job_name.split(" / ", 1)
 
-        # Try exact job name first
-        dab_file = self.dab_base / (pipeline_name or job_name) / "databricks.yml"
-        if not dab_file.exists():
-            # Fallback: search all DAB dirs
-            for d in self.dab_base.iterdir():
-                candidate = d / "databricks.yml"
-                if candidate.exists():
-                    dab_file = candidate
-                    break
-
+        dab_file = self.dab_base / "databricks.yml"
         if not dab_file.exists():
             return {}
 
@@ -85,23 +74,41 @@ class DABContextLoader:
             return {}
 
     def get_all_contexts(self) -> dict[str, dict[str, Any]]:
-        """Load context for all jobs that have DAB files."""
+        """Load context for every job resource in the shared DAB bundle."""
         contexts: dict[str, dict[str, Any]] = {}
-        if not self.dab_base.exists():
+        dab_file = self.dab_base / "databricks.yml"
+        if not dab_file.exists() or not _YAML_AVAILABLE:
             return contexts
-        for job_dir in self.dab_base.iterdir():
-            if job_dir.is_dir():
-                ctx = self.get_context(job_dir.name)
-                if ctx:
-                    contexts[job_dir.name] = ctx
+
+        try:
+            raw = self._load_bundle(dab_file)
+            jobs = raw.get("resources", {}).get("jobs", {})
+            for resource_key, job_def in jobs.items():
+                job_name = job_def.get("name", resource_key)
+                context = self._extract_from_parsed(raw, job_name)
+                if context:
+                    contexts[job_name] = context
+        except Exception as e:
+            print(f"[DABContextLoader] Warning: could not parse {dab_file}: {e}")
         return contexts
+
+    def _load_bundle(self, dab_file: Path) -> dict[str, Any]:
+        """Load the manifest and merge included resource definitions."""
+        raw = yaml.safe_load(dab_file.read_text(encoding="utf-8")) or {}
+        resources = raw.setdefault("resources", {})
+        for include_pattern in raw.get("include", []):
+            for resource_file in sorted(self.dab_base.glob(include_pattern)):
+                included = yaml.safe_load(resource_file.read_text(encoding="utf-8")) or {}
+                for resource_type, definitions in included.get("resources", {}).items():
+                    resources.setdefault(resource_type, {}).update(definitions)
+        return raw
 
     def _parse_dab(self, dab_file: Path, job_name: str, task_key: str | None = None) -> dict[str, Any]:
         """Parse a databricks.yml file and extract RCA-relevant context."""
         content = dab_file.read_text(encoding="utf-8")
 
         if _YAML_AVAILABLE:
-            raw = yaml.safe_load(content)
+            raw = self._load_bundle(dab_file)
             return self._extract_from_parsed(raw, job_name, task_key)
         else:
             return self._extract_from_text(content, job_name)
@@ -113,8 +120,19 @@ class DABContextLoader:
         task configuration. Pipeline-level tags are always included.
         """
         jobs = raw.get("resources", {}).get("jobs", {})
-        # Find the job definition — try exact name, then first job in the bundle
-        job_def = jobs.get(job_name) or (list(jobs.values())[0] if jobs else {})
+        requested_name = job_name.split(" / ", 1)[0]
+        job_entry = next(
+            (
+                (resource_key, definition)
+                for resource_key, definition in jobs.items()
+                if resource_key == requested_name
+                or definition.get("name") == requested_name
+            ),
+            None,
+        )
+        if job_entry is None:
+            return {}
+        resource_key, job_def = job_entry
 
         tags     = job_def.get("tags", {})
         all_tasks = job_def.get("tasks", [])
@@ -123,10 +141,9 @@ class DABContextLoader:
         # Find the specific task if task_key provided, else use first task
         task_def = {}
         if task_key and all_tasks:
-            task_def = next(
-                (t for t in all_tasks if t.get("task_key") == task_key),
-                all_tasks[0]
-            )
+            task_def = next((t for t in all_tasks if t.get("task_key") == task_key), {})
+            if not task_def:
+                return {}
         elif all_tasks:
             task_def = all_tasks[0]
 
@@ -139,17 +156,17 @@ class DABContextLoader:
             "description":       task_def.get("description", "") or job_def.get("description", ""),
             "layer":             tags.get("layer", "") or params.get("layer", ""),
             "upstream_system":   tags.get("upstream_system", "") or params.get("upstream_system", ""),
-            "source_table":      params.get("source_table", "") or tags.get("source_table", ""),
-            "target_table":      params.get("target_table", "") or tags.get("target_table", ""),
-            "target_schema":     params.get("target_schema", "") or tags.get("target_schema", ""),
-            "sla":               params.get("sla", "") or tags.get("sla", ""),
+            "source_table":      tags.get("source_table", "") or params.get("source_table", ""),
+            "target_table":      tags.get("target_table", "") or params.get("target_table", ""),
+            "target_schema":     tags.get("target_schema", "") or params.get("target_schema", ""),
+            "sla":               tags.get("sla", "") or params.get("sla", ""),
             "schedule":          schedule.get("quartz_cron_expression", ""),
             "parameters":        params,
             "source_path":       params.get("source_path", ""),
             "filename_pattern":  params.get("filename_pattern", ""),
             "archive_path":      params.get("archive_path", ""),
             "depends_on_tasks":  depends_on,
-            "pipeline_name":     list(jobs.keys())[0] if jobs else "",
+            "pipeline_name":     resource_key,
             "pipeline_tags":     tags,
             "total_tasks":       len(all_tasks),
         }

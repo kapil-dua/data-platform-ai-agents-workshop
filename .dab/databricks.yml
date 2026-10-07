@@ -1,0 +1,7 @@
+bundle:
+  name: etl_nightly_medallion
+include:
+- resources/*.yml
+variables:
+  catalog:
+    default: demo_etl

@@ -35,7 +35,7 @@ The RCA agent enriches every analysis with two context sources:
 
 | Source | What it provides |
 |---|---|
-| **DAB YAML** (`.dab/etl_nightly_medallion/databricks.yml`) | Job design intent: source paths, filename patterns, upstream system, target tables, SLA, archive paths |
+| **DAB YAML** (`.dab/databricks.yml`) | Job design intent: source paths, filename patterns, upstream system, target tables, SLA, archive paths |
 | **Unity Catalog Lineage** (`system.access.table_lineage`) | Runtime history: which tables were read/written, last successful write time, downstream consumers affected |
 
 ---
@@ -80,8 +80,9 @@ data-platform-ai-agents/
 │   └── test_jira_mcp.py
 │
 └── .dab/
-    └── etl_nightly_medallion/
-        └── databricks.yml          # DAB bundle — pipeline context for RCA agent
+    ├── databricks.yml              # DAB bundle manifest
+    └── resources/                  # One job definition per YAML file
+        └── <job_name>.yml
 ```
 
 ---
