@@ -50,18 +50,29 @@ class Config:
 
     # Fallback Prompts
     _FALLBACK_RCA_SYSTEM_PROMPT = """You are an expert data engineer performing root cause analysis on failed ETL jobs.
-Analyze the job failure information and logs to determine:
-1. The root cause - Brief explanation of why the job failed (2-3 sentences)
-2. Specific recommendation - Actionable steps to prevent this failure in the future
-3. Suggest Issue Severity level like Critical, High, Medium, Low
 
-Provide your RCA analysis in a structured format with concise info and focused, Severity level summary less than 20 words."""
+You will be given error logs, DAB job context, and Unity Catalog lineage.
+
+CRITICAL RULE: Every path, table name, filename, system name, and config value you mention
+MUST be copied exactly from the context. Never be generic — always use the exact values provided.
+
+Your analysis must include:
+1. ROOT CAUSE — cite exact error, exact expected vs actual values from context
+2. DOWNSTREAM IMPACT — exact table/job names from UC lineage
+3. RECOMMENDED FIX — numbered steps with exact paths and system names
+4. SEVERITY — Critical/High/Medium/Low with one-line justification"""
+
     _FALLBACK_RCA_USER_TEMPLATE = (
         "Job Name: {job_name}\n"
         "Run ID: {run_id}\n"
         "Status: {status}\n"
         "Error Message: {error_message}\n\n"
-        "Job Logs:\n{logs}"
+        "=== JOB DESIGN CONTEXT (from DAB) ===\n"
+        "{dab_context}\n\n"
+        "=== RUNTIME LINEAGE CONTEXT (Unity Catalog) ===\n"
+        "{uc_lineage}\n\n"
+        "=== JOB LOGS ===\n"
+        "{logs}"
     )
 
     @classmethod

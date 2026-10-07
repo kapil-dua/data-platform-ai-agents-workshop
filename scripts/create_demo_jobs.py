@@ -72,19 +72,44 @@ print(f"[{datetime.datetime.utcnow()}] Customer data ingestion completed success
         "job_name": "etl_ingest_sales_transactions",
         "should_fail": True,
         "cells": [
-            ("markdown", "## ETL: Ingest Sales Transactions\nReads daily sales transactions and loads into the conformed schema."),
+            ("markdown", "## ETL: Ingest Sales Transactions\nReads daily sales transactions from the cleansed layer and writes to the conformed schema."),
             ("code", """\
 import datetime
-print(f"[{datetime.datetime.utcnow()}] Starting sales transaction ingestion...")
-print("Target schema: confromed_sales  (note: typo in schema name)")
 
-# Simulate AnalysisException caused by wrong schema name
-raise Exception(
-    "AnalysisException: Schema 'confromed_sales' does not exist. "
-    "Verify the target schema name in the pipeline configuration. "
-    "Available schemas: raw, cleansed, conformed, commercial. "
-    "Pipeline config key: TARGET_SCHEMA=confromed_sales"
-)
+run_ts = datetime.datetime.utcnow()
+print(f"[{run_ts}] Starting sales transaction ingestion...")
+
+# ── Pipeline configuration ──────────────────────────────────────────────────
+SOURCE_PATH   = "abfss://cleansed@datalake.dfs.core.windows.net/sales/transactions/"
+TARGET_SCHEMA = "confromed_sales"    # <── typo introduced in config change on 2026-10-01
+TARGET_TABLE  = "fact_sales_transactions"
+FULL_TARGET   = f"{TARGET_SCHEMA}.{TARGET_TABLE}"
+
+print(f"Source path   : {SOURCE_PATH}")
+print(f"Target schema : {TARGET_SCHEMA}")
+print(f"Target table  : {FULL_TARGET}")
+print()
+
+# ── Schema existence check (simulated) ─────────────────────────────────────
+AVAILABLE_SCHEMAS = ["raw", "cleansed", "conformed", "commercial"]
+print(f"Available schemas in Unity Catalog: {AVAILABLE_SCHEMAS}")
+print(f"Checking if schema '{TARGET_SCHEMA}' exists...")
+
+if TARGET_SCHEMA not in AVAILABLE_SCHEMAS:
+    raise Exception(
+        f"AnalysisException: [SCHEMA_NOT_FOUND] Schema '{TARGET_SCHEMA}' does not exist "
+        f"in Unity Catalog. "
+        f"\\n\\nDiagnostics:"
+        f"\\n  Configured schema : {TARGET_SCHEMA}"
+        f"\\n  Available schemas : {AVAILABLE_SCHEMAS}"
+        f"\\n  Likely cause      : Typo in TARGET_SCHEMA config — 'confromed' should be 'conformed'"
+        f"\\n  Config location   : Pipeline config key TARGET_SCHEMA in job parameters"
+        f"\\n  Last successful run: 2026-09-30 (schema was 'conformed' at that time)"
+        f"\\n\\nRecommended fix:"
+        f"\\n  1. Update job parameter TARGET_SCHEMA from 'confromed_sales' to 'conformed_sales'"
+        f"\\n  2. Verify schema exists: SELECT * FROM information_schema.schemata WHERE schema_name = 'conformed_sales'"
+        f"\\n  3. Confirm the schema was not accidentally dropped or renamed"
+    )
 """),
         ],
     },
@@ -95,21 +120,65 @@ raise Exception(
         "job_name": "etl_ingest_daily_inventory",
         "should_fail": True,
         "cells": [
-            ("markdown", "## ETL: Ingest Daily Inventory\nExpects a daily CSV drop from the warehouse system at midnight UTC."),
+            ("markdown", "## ETL: Ingest Daily Inventory\nExpects a daily CSV drop from the warehouse management system (WMS) at 01:00 UTC every day."),
             ("code", """\
 import datetime
-today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
-expected_path = f"abfss://raw@datalake.dfs.core.windows.net/inventory/daily/inventory_{today}.csv"
 
-print(f"[{datetime.datetime.utcnow()}] Starting daily inventory ingestion...")
-print(f"Expected file path: {expected_path}")
+run_ts  = datetime.datetime.utcnow()
+today   = run_ts.strftime("%Y-%m-%d")
+yesterday = (run_ts - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
 
-# Simulate file not yet landed
+# ── File convention and storage layout ─────────────────────────────────────
+STORAGE_ACCOUNT    = "datalake"
+CONTAINER          = "raw"
+BASE_PATH          = f"abfss://{CONTAINER}@{STORAGE_ACCOUNT}.dfs.core.windows.net/inventory/daily/"
+EXPECTED_FILENAME  = f"inventory_{today}.csv"
+EXPECTED_FULL_PATH = f"{BASE_PATH}{EXPECTED_FILENAME}"
+FILE_NAMING_FORMAT = "inventory_YYYY-MM-DD.csv"
+DELIVERY_SLA       = "01:00 UTC daily (delivered by WMS automated export)"
+SFTP_LANDING_ZONE  = "/inbound/inventory/daily/"
+ARCHIVE_PATH       = f"{BASE_PATH}archive/"
+
+# Files found in archive for last 7 days (simulated directory listing)
+RECENT_ARCHIVE = [
+    f"archive/inventory_{(run_ts - datetime.timedelta(days=i)).strftime('%Y-%m-%d')}.csv"
+    for i in range(1, 8)
+]
+
+print(f"[{run_ts}] Starting daily inventory ingestion...")
+print(f"Expected file  : {EXPECTED_FULL_PATH}")
+print(f"File format    : {FILE_NAMING_FORMAT}")
+print(f"Delivery SLA   : {DELIVERY_SLA}")
+print(f"SFTP zone      : {SFTP_LANDING_ZONE}")
+print()
+print(f"Checking storage path: {EXPECTED_FULL_PATH}")
+print(f"Last 7 successfully archived files:")
+for f in RECENT_ARCHIVE:
+    print(f"  ✅ {f}")
+print()
+
+# Simulate file not yet landed (WMS delivery delayed)
 raise FileNotFoundError(
-    f"FileNotFoundError: The specified path does not exist: {expected_path}. "
-    f"The upstream warehouse system may not have delivered today's file yet. "
-    f"Last successful delivery was for date: {(datetime.datetime.utcnow() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')}. "
-    f"Check the SFTP landing zone or contact the warehouse operations team."
+    f"FileNotFoundError: File not found at expected path."
+    f"\\n\\nDiagnostics:"
+    f"\\n  Expected path     : {EXPECTED_FULL_PATH}"
+    f"\\n  Expected filename : {EXPECTED_FILENAME}"
+    f"\\n  Naming convention : {FILE_NAMING_FORMAT}"
+    f"\\n  Delivery SLA      : {DELIVERY_SLA}"
+    f"\\n  Current UTC time  : {run_ts.strftime('%Y-%m-%d %H:%M:%S')}"
+    f"\\n  Last successful   : inventory_{yesterday}.csv (processed {yesterday} 01:14 UTC)"
+    f"\\n  Files in archive  : {RECENT_ARCHIVE}"
+    f"\\n  SFTP landing zone : {SFTP_LANDING_ZONE}"
+    f"\\n\\nPossible causes:"
+    f"\\n  1. WMS export job delayed or failed — check WMS scheduler for {today}"
+    f"\\n  2. SFTP transfer failed — file may be in landing zone but not copied to ADLS"
+    f"\\n  3. File naming changed by WMS team (check if today's file uses a different format)"
+    f"\\n\\nRecommended fix:"
+    f"\\n  1. Check SFTP landing zone {SFTP_LANDING_ZONE} for inventory_{today}.csv"
+    f"\\n  2. Check WMS export logs for job scheduled at 01:00 UTC on {today}"
+    f"\\n  3. If file exists on SFTP but not in ADLS, re-trigger the SFTP→ADLS copy pipeline"
+    f"\\n  4. If WMS export failed, contact warehouse operations team to re-run the export"
+    f"\\n  5. If this pipeline can tolerate delay, increase the job schedule retry window"
 )
 """),
         ],
@@ -121,26 +190,65 @@ raise FileNotFoundError(
         "job_name": "etl_transform_revenue_summary",
         "should_fail": True,
         "cells": [
-            ("markdown", "## ETL: Transform Revenue Summary\nReads raw revenue export (YYYYMMDD format) and transforms into the conformed fact table."),
+            ("markdown", "## ETL: Transform Revenue Summary\nReads the daily revenue export from the finance system and transforms it into the conformed fact table."),
             ("code", """\
 import datetime
 import re
 
-print(f"[{datetime.datetime.utcnow()}] Starting revenue summary transformation...")
+run_ts = datetime.datetime.utcnow()
+today  = run_ts.strftime("%Y-%m-%d")
 
-# Pipeline is hardcoded to look for YYYY-MM-DD format but file uses YYYYMMDD
-expected_pattern = r"revenue_export_(\\d{4}-\\d{2}-\\d{2})\\.csv"
-actual_filename   = "revenue_export_20261002.csv"  # YYYYMMDD — no dashes
+# ── File configuration ──────────────────────────────────────────────────────
+SOURCE_PATH         = "abfss://raw@datalake.dfs.core.windows.net/finance/revenue/"
+EXPECTED_PATTERN    = r"revenue_export_(\\d{4}-\\d{2}-\\d{2})\\.csv"   # YYYY-MM-DD format (historic format)
+EXPECTED_EXAMPLE    = f"revenue_export_{today}.csv"
+TARGET_TABLE        = "conformed.fact_revenue_daily"
 
-match = re.match(expected_pattern, actual_filename)
+# Files actually present in the source directory (simulated listing)
+# Finance system changed export format from YYYY-MM-DD to YYYYMMDD on 2026-10-01
+FILES_IN_SOURCE = [
+    "revenue_export_20261005.csv",   # new YYYYMMDD format (no dashes)
+    "revenue_export_20261004.csv",
+    "revenue_export_20261003.csv",
+    "revenue_export_2026-10-02.csv", # last file in old YYYY-MM-DD format
+    "revenue_export_2026-10-01.csv",
+]
+ACTUAL_FILE_TODAY = "revenue_export_20261005.csv"  # what the finance system dropped
+
+print(f"[{run_ts}] Starting revenue summary transformation...")
+print(f"Source path       : {SOURCE_PATH}")
+print(f"Expected pattern  : {EXPECTED_PATTERN}")
+print(f"Expected filename : {EXPECTED_EXAMPLE}")
+print(f"Target table      : {TARGET_TABLE}")
+print()
+print(f"Files found in source directory:")
+for f in FILES_IN_SOURCE:
+    print(f"  {'✅' if re.match(EXPECTED_PATTERN, f) else '❌'} {f}")
+print()
+print(f"Attempting to match: {ACTUAL_FILE_TODAY}")
+
+match = re.match(EXPECTED_PATTERN, ACTUAL_FILE_TODAY)
 if not match:
     raise ValueError(
-        f"ValueError: Filename '{actual_filename}' does not match expected pattern "
-        f"'revenue_export_YYYY-MM-DD.csv'. "
-        f"The upstream finance system changed the export filename format from "
-        f"'YYYY-MM-DD' to 'YYYYMMDD' without notifying the data engineering team. "
-        f"Update the filename parser in the ingestion config or ask the finance team "
-        f"to revert the export format."
+        f"ValueError: Filename pattern mismatch — cannot extract date from filename."
+        f"\\n\\nDiagnostics:"
+        f"\\n  Actual filename   : {ACTUAL_FILE_TODAY}"
+        f"\\n  Expected pattern  : {EXPECTED_PATTERN}  (YYYY-MM-DD with dashes)"
+        f"\\n  Expected example  : {EXPECTED_EXAMPLE}"
+        f"\\n  Source path       : {SOURCE_PATH}"
+        f"\\n  Last matching file: revenue_export_2026-10-02.csv (old YYYY-MM-DD format, processed 2026-10-02)"
+        f"\\n  First non-matching: revenue_export_20261003.csv (new YYYYMMDD format, started 2026-10-03)"
+        f"\\n\\nRoot cause:"
+        f"\\n  Finance system changed export filename format from 'YYYY-MM-DD' to 'YYYYMMDD' (no dashes)"
+        f"\\n  starting from 2026-10-03. No change notification was sent to the data engineering team."
+        f"\\n  The date extraction regex in this pipeline still expects the old 'YYYY-MM-DD' format."
+        f"\\n\\nRecommended fix:"
+        f"\\n  Option A (preferred): Update the filename pattern in this pipeline to accept both formats:"
+        f"\\n    EXPECTED_PATTERN = r'revenue_export_(\\d{{4}}-?\\d{{2}}-?\\d{{2}})\\\\.csv'"
+        f"\\n  Option B: Ask the finance team to revert to 'YYYY-MM-DD' format (reference: FIN-4821)"
+        f"\\n  Option C: Update pattern to new format only:"
+        f"\\n    EXPECTED_PATTERN = r'revenue_export_(\\d{{8}})\\\\.csv'"
+        f"\\n  After fix, reprocess backlog: 20261003, 20261004, 20261005"
     )
 """),
         ],

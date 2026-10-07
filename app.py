@@ -44,7 +44,7 @@ def initialize_session_state():
     if 'workflow_task' not in st.session_state:
         st.session_state.workflow_task = "monitor_analyze_incident"
     if 'mode' not in st.session_state:
-        st.session_state.mode = "ticker"  # "ticker" | "manual"
+        st.session_state.mode = "manual"  # "ticker" | "manual"
 
 
 def respond_to_incident_review(decisions: list[dict]) -> bool:
@@ -253,15 +253,6 @@ def display_sidebar():
 
         # ── Manual mode controls ───────────────────────────────────────────
         else:
-            st.subheader("🎯 Triage Options")
-            st.session_state.workflow_task = st.selectbox(
-                "Workflow",
-                options=["monitor", "monitor_and_analyze", "monitor_analyze_incident"],
-                index=["monitor", "monitor_and_analyze", "monitor_analyze_incident"].index(
-                    st.session_state.workflow_task
-                ),
-            )
-
             review_pending = bool(
                 st.session_state.results
                 and st.session_state.results.get("__interrupt__")
@@ -272,6 +263,7 @@ def display_sidebar():
                 use_container_width=True,
                 disabled=review_pending,
             ):
+                st.session_state.workflow_task = "monitor_analyze_incident"
                 st.session_state.monitoring_requested = True
                 st.session_state.monitoring_complete = False
                 st.rerun()
@@ -283,29 +275,30 @@ def display_sidebar():
         # ── Agent architecture ─────────────────────────────────────────────
         st.subheader("🤖 Agent Architecture")
         with st.expander("Supervisor Agent", expanded=False):
-            st.write("**Role:** Workflow Coordinator")
-            st.write("- Orchestrates multi-agent workflow execution")
-            st.write("- Coordinates specialised triage worker agents")
-        with st.expander("Monitor Agent", expanded=False):
+            st.write("**Role:** ReAct Workflow Coordinator")
+            st.write("- Orchestrates 4 specialised worker agents")
+            st.write("- Uses LLM reasoning to decide which agent to invoke next")
+            st.write("- Logs reasoning to execution log")
+        with st.expander("Worker 1 — Monitor Agent", expanded=False):
             st.write("**Role:** Job Status Monitoring")
-            st.write("- Tracks configured job runs")
-            st.write("- Identifies failed jobs")
-        with st.expander("RCA Fan-Out", expanded=False):
-            st.write("**Role:** Parallel Dispatcher")
-            st.write("- Fans out one RCA task per failed job")
-            st.write("- All jobs analysed simultaneously (Send API)")
-        with st.expander("RCA Agent", expanded=False):
-            st.write("**Role:** Root Cause Analysis")
-            st.write("- Analyses failed job runs")
-            st.write("- Provides root cause & recommendations")
-        with st.expander("RCA Evaluator", expanded=False):
-            st.write("**Role:** Quality Gate")
-            st.write("- Scores RCA on clarity, actionability, completeness")
-            st.write("- Retries below-threshold results (max 3 iterations)")
-        with st.expander("Incident Agent", expanded=False):
+            st.write("- Tracks all Databricks job runs via SDK")
+            st.write("- Identifies failed jobs and surfaces error messages")
+        with st.expander("Worker 2 — RCA Fan-Out", expanded=False):
+            st.write("**Role:** Parallel RCA Dispatcher")
+            st.write("- Uses LangGraph Send API to dispatch one RCA per failed job")
+            st.write("- All jobs analysed simultaneously (not sequentially)")
+            st.write("- Results merged via Annotated reducer (Option 3 — Shared Memory)")
+        with st.expander("Worker 3 — RCA Evaluator", expanded=False):
+            st.write("**Role:** Quality Gate (Evaluator-Optimizer)")
+            st.write("- Scores each RCA on Clarity, Actionability, Completeness (1-10)")
+            st.write("- Checks whether DAB context and UC lineage were used correctly")
+            st.write("- Enforces WHAT + WHERE + ACCESS in every fix step")
+            st.write("- Retries below-threshold RCAs with targeted per-criterion feedback")
+        with st.expander("Worker 4 — Incident Agent", expanded=False):
             st.write("**Role:** Incident Management")
-            st.write("- Creates Jira tickets for failed jobs")
-            st.write("- Attaches RCA analysis to tickets")
+            st.write("- Pauses for human review before creating any ticket (HITL)")
+            st.write("- Supports per-incident approve/reject, severity override, context note")
+            st.write("- Creates Jira tickets via Atlassian Rovo MCP")
 
         st.markdown("---")
         st.subheader("ℹ️ Model Info")
@@ -460,11 +453,11 @@ def display_results():
                     if eval_score is not None:
                         st.write("**Evaluator Scores:**")
                         breakdown = rca.get("eval_scores_breakdown", {})
-                        passed = rca.get("eval_passed", False)
-                        score_color = "green" if passed else "orange"
+                        passed_eval = rca.get("eval_passed", False)
+                        score_color = "green" if passed_eval else "orange"
                         st.markdown(
                             f"Overall: :{score_color}[**{eval_score:.1f}/10**] "
-                            f"({'✅ Passed' if passed else '⚠️ Below threshold'})"
+                            f"({'✅ Passed' if passed_eval else '⚠️ Below threshold'})"
                         )
                         if breakdown:
                             st.text(f"Clarity:       {breakdown.get('clarity', 'N/A')}/10")
@@ -472,7 +465,15 @@ def display_results():
                             st.text(f"Completeness:  {breakdown.get('completeness', 'N/A')}/10")
                         if eval_iters:
                             st.text(f"Iterations:    {eval_iters}")
-
+                        # Show per-criterion evaluator feedback if not passed
+                        if not passed_eval:
+                            for fb_key, fb_label in [
+                                ("_eval_clarity_feedback",      "🔤 Clarity feedback"),
+                                ("_eval_actionability_feedback","🔧 Actionability feedback"),
+                                ("_eval_completeness_feedback", "📋 Completeness feedback"),
+                            ]:
+                                if rca.get(fb_key):
+                                    st.caption(f"**{fb_label}:** {rca[fb_key]}")
                 with col2:
                     st.write("**Root Cause:**")
                     st.write(rca["root_cause"])
@@ -496,14 +497,15 @@ def display_results():
 
         SEVERITIES = ["Critical", "High", "Medium", "Low"]
 
-        # Collect per-incident decisions from form widgets
-        per_incident: list[dict] = []
-        for idx, incident in enumerate(incidents):
-            with st.expander(
-                f"{'🔴' if incident.get('severity') in ('Critical','High') else '🟡'} "
-                f"{incident.get('job_name', 'Unknown')} — {incident.get('severity', 'Unspecified')}",
-                expanded=True,
-            ):
+        with st.form("incident_review_form"):
+            per_incident: list[dict] = []
+
+            for idx, incident in enumerate(incidents):
+                severity = incident.get("severity", "Medium")
+                icon = "🔴" if severity in ("Critical", "High") else "🟡"
+
+                st.markdown(f"#### {icon} {incident.get('job_name', 'Unknown')} — {severity}")
+
                 col_info, col_controls = st.columns([2, 1])
 
                 with col_info:
@@ -516,21 +518,20 @@ def display_results():
 
                 with col_controls:
                     approved = st.checkbox(
-                        "✅ Approve",
+                        "✅ Approve for ticket creation",
                         value=True,
                         key=f"approve_{idx}_{incident.get('run_id')}",
                     )
                     severity_override = st.selectbox(
                         "Severity",
                         options=SEVERITIES,
-                        index=SEVERITIES.index(incident.get("severity", "Medium"))
-                        if incident.get("severity") in SEVERITIES else 1,
+                        index=SEVERITIES.index(severity) if severity in SEVERITIES else 1,
                         key=f"sev_{idx}_{incident.get('run_id')}",
-                        help="Override the LLM-assigned severity if needed",
+                        help="Override the LLM-assigned severity",
                     )
                     context_note = st.text_area(
                         "Context note (added to ticket)",
-                        placeholder="e.g. Related to yesterday's deployment, check commit abc123",
+                        placeholder="e.g. Related to yesterday's deployment",
                         key=f"ctx_{idx}_{incident.get('run_id')}",
                         height=80,
                     )
@@ -538,28 +539,34 @@ def display_results():
                 per_incident.append({
                     "run_id":            incident.get("run_id"),
                     "approved":          approved,
-                    "severity_override": severity_override if severity_override != incident.get("severity") else None,
+                    "severity_override": severity_override if severity_override != severity else None,
                     "context_note":      context_note.strip(),
                 })
 
-        approved_count = sum(1 for d in per_incident if d["approved"])
-        st.caption(f"{approved_count} of {len(incidents)} incident(s) marked for creation")
+                if idx < len(incidents) - 1:
+                    st.divider()
 
-        submit_col, reject_all_col, _ = st.columns([1, 1, 4])
-        with submit_col:
-            if st.button(
-                f"Submit Review ({approved_count} approved)",
-                type="primary",
-                key="submit_review",
-                disabled=len(per_incident) == 0,
-            ):
-                if respond_to_incident_review(per_incident):
-                    st.rerun()
-        with reject_all_col:
-            if st.button("Reject All", key="reject_all"):
-                all_rejected = [{**d, "approved": False} for d in per_incident]
-                if respond_to_incident_review(all_rejected):
-                    st.rerun()
+            st.markdown("")
+            approved_count = sum(1 for d in per_incident if d["approved"])
+            st.caption(f"{approved_count} of {len(incidents)} incident(s) marked for creation")
+
+            submit_col, reject_col, _ = st.columns([1, 1, 4])
+            with submit_col:
+                submitted = st.form_submit_button(
+                    f"✅ Submit ({approved_count} approved)",
+                    type="primary",
+                )
+            with reject_col:
+                rejected_all = st.form_submit_button("❌ Reject All")
+
+        # Handle form submission outside the form block
+        if submitted:
+            if respond_to_incident_review(per_incident):
+                st.rerun()
+        elif rejected_all:
+            all_rejected = [{**d, "approved": False} for d in per_incident]
+            if respond_to_incident_review(all_rejected):
+                st.rerun()
 
     if incident_results:
         st.subheader("Incident Agent - Result")

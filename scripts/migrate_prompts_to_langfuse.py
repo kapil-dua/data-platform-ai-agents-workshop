@@ -33,19 +33,48 @@ load_dotenv()
 
 
 RCA_SYSTEM_PROMPT = """You are an expert data engineer performing root cause analysis on failed ETL jobs.
-Analyze the job failure information and logs to determine:
-1. The root cause - Brief explanation of why the job failed (2-3 sentences)
-2. Specific recommendation - Actionable steps to prevent this failure in the future
-3. Suggest Issue Severity level like Critical, High, Medium, Low
 
-Provide your RCA analysis in a structured format with concise info and focused, Severity level summary less than 20 words."""
+You will be given:
+1. Job error logs and stack trace
+2. Job context from the DAB (Databricks Asset Bundle) — what the job is designed to do
+3. Unity Catalog lineage — what tables the job reads/writes and who depends on its output
+
+CRITICAL RULE: Every path, table name, filename, system name, timestamp, and config value
+you mention in your response MUST be copied exactly from the context provided above.
+Never say "check the landing zone" — say the exact path.
+Never say "the upstream system" — say the exact system name.
+Never say "the expected file" — say the exact filename with date.
+If a value is in the context, use it. If it is not in the context, say it is unknown.
+
+Your analysis must include:
+
+1. ROOT CAUSE — specific explanation referencing the exact error, the job's design intent,
+   and the mismatch between what was expected and what was found.
+   Quote exact values from the DAB context and error logs.
+
+2. DOWNSTREAM IMPACT — which exact downstream tables or consumers will be affected.
+   Reference exact table names and job names from the UC lineage data.
+
+3. RECOMMENDED FIX — numbered, specific steps with exact paths, commands, and contact points.
+   Example of good: "Check SFTP landing zone /inbound/inventory/daily/ for inventory_2026-10-07.csv"
+   Example of bad:  "Check the SFTP landing zone for today's file"
+
+4. SEVERITY — Critical / High / Medium / Low with a one-line justification.
+
+Be concise but specific. Every actionable step must include exact values."""
 
 RCA_USER_PROMPT = """Job Name: {{job_name}}
 Run ID: {{run_id}}
 Status: {{status}}
 Error Message: {{error_message}}
 
-Job Logs:
+=== JOB DESIGN CONTEXT (from DAB) ===
+{{dab_context}}
+
+=== RUNTIME LINEAGE CONTEXT (Unity Catalog) ===
+{{uc_lineage}}
+
+=== JOB LOGS ===
 {{logs}}"""
 
 PROMPTS = [

@@ -115,7 +115,8 @@ class SupervisorAgent:
         self.evaluator_agent = RCAEvaluatorAgent()
         self.incident_agent  = IncidentAgent()
         self.workflow_store  = WorkflowStore()
-        self._last_fan_out_degree = 0  # updated at runtime for diagram label
+        self._last_fan_out_degree = 0  # captured for diagram label
+        self._last_execution_log  = []  # captured for retry detection in diagram
         self.checkpointer    = self._build_checkpointer()
         self.workflow        = self._build_workflow()
         print(self.workflow.get_graph().draw_mermaid())
@@ -303,10 +304,24 @@ class SupervisorAgent:
         for rca in to_evaluate:
             score = rca.get("eval_score")
             if score is None:
+                # Extract DAB context and UC lineage stored on the RCA result
+                # so the evaluator can check whether they were actually used
+                from tools.dab_context_loader import DABContextLoader
+                from tools.uc_lineage_fetcher import UCLineageFetcher
+                dab_loader = DABContextLoader()
+                dab_ctx    = dab_loader.get_context(rca.get("job_name", ""))
+                dab_text   = dab_loader.format_for_prompt(dab_ctx)
+                uc_ctx     = rca.get("uc_lineage", {})
+                uc_text    = UCLineageFetcher(
+                    self.monitor_agent.databricks_client.workspace_client
+                ).format_for_prompt(uc_ctx)
+
                 evaluation = self.evaluator_agent.evaluate(
                     job_name=rca.get("job_name", ""),
                     error_message=rca.get("error_message", ""),
                     rca_analysis=rca.get("root_cause", ""),
+                    dab_context=dab_text,
+                    uc_lineage=uc_text,
                 )
                 rca = {
                     **rca,
@@ -318,7 +333,10 @@ class SupervisorAgent:
                         "actionability": evaluation.actionability_score,
                         "completeness":  evaluation.completeness_score,
                     },
-                    "_eval_feedback": evaluation.feedback,
+                    "_eval_feedback":              evaluation.feedback,
+                    "_eval_clarity_feedback":      evaluation.clarity_feedback,
+                    "_eval_actionability_feedback":evaluation.actionability_feedback,
+                    "_eval_completeness_feedback": evaluation.completeness_feedback,
                 }
                 score = evaluation.overall_score
 
@@ -327,15 +345,34 @@ class SupervisorAgent:
 
             if rca.get("eval_passed") or current_iter >= max_iters:
                 status = "✅ passed" if rca.get("eval_passed") else f"⚠️ max iterations ({max_iters}) reached"
-                log.append(f"RCA Evaluator: {rca['job_name']} — score {score:.1f}/10 {status}")
+                log.append(
+                    f"RCA Evaluator: {rca['job_name']} — score {score:.1f}/10 "
+                    f"(C:{rca['eval_scores_breakdown']['clarity']:.0f} "
+                    f"A:{rca['eval_scores_breakdown']['actionability']:.0f} "
+                    f"Co:{rca['eval_scores_breakdown']['completeness']:.0f}) {status}"
+                )
                 passed.append(rca)
             else:
                 log.append(
-                    f"RCA Evaluator: {rca['job_name']} — score {score:.1f}/10 below "
-                    f"threshold {EVAL_THRESHOLD} — retry {current_iter + 1}/{max_iters}"
+                    f"RCA Evaluator: {rca['job_name']} — score {score:.1f}/10 "
+                    f"(C:{rca['eval_scores_breakdown']['clarity']:.0f} "
+                    f"A:{rca['eval_scores_breakdown']['actionability']:.0f} "
+                    f"Co:{rca['eval_scores_breakdown']['completeness']:.0f}) "
+                    f"below threshold {EVAL_THRESHOLD} — retry {current_iter + 1}/{max_iters}"
                 )
-                rca["evaluator_feedback"] = rca.get("_eval_feedback", "")
+                # Build structured targeted feedback for the retry
+                feedback_parts = []
+                if rca.get("_eval_clarity_feedback"):
+                    feedback_parts.append(f"CLARITY: {rca['_eval_clarity_feedback']}")
+                if rca.get("_eval_actionability_feedback"):
+                    feedback_parts.append(f"ACTIONABILITY: {rca['_eval_actionability_feedback']}")
+                if rca.get("_eval_completeness_feedback"):
+                    feedback_parts.append(f"COMPLETENESS: {rca['_eval_completeness_feedback']}")
+
+                rca["evaluator_feedback"] = "\n\n".join(feedback_parts) or rca.get("_eval_feedback", "")
                 rca["eval_iterations"]    = current_iter + 1
+                rca["eval_score"]  = None
+                rca["eval_passed"] = None
                 failed.append(rca)
 
         return {
@@ -494,10 +531,10 @@ class SupervisorAgent:
         """Reconstruct visited nodes from execution_log for graph highlighting."""
         log  = state.get("execution_log", [])
         path = ["supervisor"]
+        # Only add nodes that were actually visited — check log markers
         node_markers = {
             "monitor":       "Monitor Agent completed",
             "rca_fan_out":   "fanning out RCA",
-            "rca":           "RCA Agent completed",
             "rca_evaluator": "RCA Evaluator:",
             "incident":      "Incident Agent",
         }
@@ -505,6 +542,7 @@ class SupervisorAgent:
             for node, marker in node_markers.items():
                 if marker in entry and node not in path:
                     path.append(node)
+        # rca node is hidden in diagram but drives rca_fan_out highlight — skip it
         return path
 
     def _workflow_graph_dot(self, workflow_path: list[str]) -> str:
@@ -523,17 +561,24 @@ class SupervisorAgent:
 
         hidden_nodes = {"rca"}
         skip_edges = {
-            ("rca_fan_out", "rca"),
-            ("rca",         "rca_evaluator"),
+            ("rca_fan_out",   "rca"),
+            ("rca",           "rca_evaluator"),
             ("rca_evaluator", "rca"),
+            # Replace with injected dotted version below
+            ("rca_evaluator", "incident"),
         }
 
-        rca_visited = "rca" in visited_nodes or "rca_fan_out" in visited_nodes
-        fan_label   = f"×{fan_out_degree} parallel" if fan_out_degree else "×N parallel"
+        rca_visited      = "rca_fan_out" in visited_nodes
+        incident_visited = "incident" in visited_nodes
+        fan_label        = f"×{fan_out_degree} parallel" if fan_out_degree else "×N parallel"
+        retry_happened   = any("retry" in e for e in getattr(self, "_last_execution_log", []))
         injected_edges = [
-            ("rca_fan_out", "rca_evaluator", fan_label, False, rca_visited),
-            ("rca_evaluator", "rca_fan_out", "retry", True,
-             ("rca_evaluator", "rca") in active_edges),
+            # rca_fan_out → rca_evaluator (solid when visited)
+            ("rca_fan_out",   "rca_evaluator", fan_label, False, rca_visited),
+            # rca_evaluator → rca_fan_out retry (dashed, active only when retry happened)
+            ("rca_evaluator", "rca_fan_out",   "retry",   True,  retry_happened),
+            # rca_evaluator → incident (dashed conditional — always shown, active when visited)
+            ("rca_evaluator", "incident",      "",        True,  incident_visited),
         ]
 
         lines = [
@@ -553,7 +598,7 @@ class SupervisorAgent:
                 attrs = 'fillcolor="#f1f3f2", color="#c5ccca", fontcolor="#78817e"'
             # Override rca_fan_out label with actual degree
             if node_id == "rca_fan_out" and fan_out_degree:
-                label = f"rca_fan_out\\n({fan_out_degree} jobs)"
+                label = f"rca_fan_out ({fan_out_degree} jobs)"
             else:
                 label = node.name
             lines.append(f'  "{node_id}" [label={json.dumps(label)}, {attrs}];')
@@ -630,6 +675,7 @@ class SupervisorAgent:
         try:
             final_state = self.workflow.invoke(input=initial_state, config=graph_config)
             workflow_path = self._workflow_path(final_state)
+            self._last_execution_log = final_state.get("execution_log", [])
             final_state["workflow_graph"] = self._workflow_graph_dot(workflow_path)
             is_interrupted = bool(final_state.get("__interrupt__"))
             final_state["workflow_status"] = "awaiting_review" if is_interrupted else "completed"
@@ -666,6 +712,7 @@ class SupervisorAgent:
             Command(resume=decisions),
             config=graph_config,
         )
+        self._last_execution_log = final_state.get("execution_log", [])
         final_state["workflow_graph"] = self._workflow_graph_dot(self._workflow_path(final_state))
         status = final_state.get("workflow_status", "completed")
         try:
