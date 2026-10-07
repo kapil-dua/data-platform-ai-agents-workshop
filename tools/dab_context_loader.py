@@ -47,21 +47,39 @@ class DABContextLoader:
 
     def get_context(self, job_name: str) -> dict[str, Any]:
         """
-        Load context for a specific job from its DAB YAML file.
+        Load context for a specific job or pipeline task from its DAB YAML.
+
+        For multi-task pipelines, job_name may be "pipeline_name / task_key".
+        The loader first tries to find a DAB for the exact job name, then
+        falls back to finding the pipeline DAB and extracting the task config.
 
         Args:
-            job_name: Databricks job name (must match the bundle directory name)
+            job_name: Job name or "pipeline / task_key" format
 
         Returns:
             Dict with structured job context, or empty dict if not found.
         """
-        dab_file = self.dab_base / job_name / "databricks.yml"
+        # Handle "pipeline_name / task_key" format from multi-task runs
+        pipeline_name = None
+        task_key      = None
+        if " / " in job_name:
+            pipeline_name, task_key = job_name.split(" / ", 1)
+
+        # Try exact job name first
+        dab_file = self.dab_base / (pipeline_name or job_name) / "databricks.yml"
+        if not dab_file.exists():
+            # Fallback: search all DAB dirs
+            for d in self.dab_base.iterdir():
+                candidate = d / "databricks.yml"
+                if candidate.exists():
+                    dab_file = candidate
+                    break
 
         if not dab_file.exists():
             return {}
 
         try:
-            return self._parse_dab(dab_file, job_name)
+            return self._parse_dab(dab_file, job_name, task_key)
         except Exception as e:
             print(f"[DABContextLoader] Warning: could not parse {dab_file}: {e}")
             return {}
@@ -84,38 +102,56 @@ class DABContextLoader:
 
         if _YAML_AVAILABLE:
             raw = yaml.safe_load(content)
-            return self._extract_from_parsed(raw, job_name)
+            return self._extract_from_parsed(raw, job_name, task_key)
         else:
-            # Fallback: simple line-by-line key:value parser
             return self._extract_from_text(content, job_name)
 
-    def _extract_from_parsed(self, raw: dict, job_name: str) -> dict[str, Any]:
-        """Extract structured context from parsed YAML dict."""
+    def _extract_from_parsed(self, raw: dict, job_name: str, task_key: str | None = None) -> dict[str, Any]:
+        """Extract structured context from parsed YAML dict.
+
+        For pipeline DABs with multiple tasks, task_key selects the specific
+        task configuration. Pipeline-level tags are always included.
+        """
         jobs = raw.get("resources", {}).get("jobs", {})
-        job_def = jobs.get(job_name, {})
+        # Find the job definition — try exact name, then first job in the bundle
+        job_def = jobs.get(job_name) or (list(jobs.values())[0] if jobs else {})
 
-        tags   = job_def.get("tags", {})
-        tasks  = job_def.get("tasks", [])
-        params = {}
-        if tasks:
-            params = tasks[0].get("notebook_task", {}).get("base_parameters", {})
-
+        tags     = job_def.get("tags", {})
+        all_tasks = job_def.get("tasks", [])
         schedule = job_def.get("schedule", {})
 
+        # Find the specific task if task_key provided, else use first task
+        task_def = {}
+        if task_key and all_tasks:
+            task_def = next(
+                (t for t in all_tasks if t.get("task_key") == task_key),
+                all_tasks[0]
+            )
+        elif all_tasks:
+            task_def = all_tasks[0]
+
+        params = task_def.get("notebook_task", {}).get("base_parameters", {})
+        depends_on = [d.get("task_key") for d in task_def.get("depends_on", [])]
+
         return {
-            "job_name":        job_name,
-            "description":     job_def.get("description", ""),
-            "layer":           tags.get("layer", ""),
-            "upstream_system": tags.get("upstream_system", ""),
-            "source_table":    tags.get("source_table", "") or params.get("source_table", ""),
-            "target_table":    tags.get("target_table", "") or params.get("target_table", ""),
-            "target_schema":   tags.get("target_schema", "") or params.get("target_schema", ""),
-            "sla":             tags.get("sla", ""),
-            "schedule":        schedule.get("quartz_cron_expression", ""),
-            "parameters":      params,
-            "source_path":     params.get("source_path", ""),
-            "filename_pattern":params.get("filename_pattern", ""),
-            "archive_path":    params.get("archive_path", ""),
+            "job_name":          job_name,
+            "task_key":          task_key or task_def.get("task_key", ""),
+            "description":       task_def.get("description", "") or job_def.get("description", ""),
+            "layer":             tags.get("layer", "") or params.get("layer", ""),
+            "upstream_system":   tags.get("upstream_system", "") or params.get("upstream_system", ""),
+            "source_table":      params.get("source_table", "") or tags.get("source_table", ""),
+            "target_table":      params.get("target_table", "") or tags.get("target_table", ""),
+            "target_schema":     params.get("target_schema", "") or tags.get("target_schema", ""),
+            "sla":               params.get("sla", "") or tags.get("sla", ""),
+            "schedule":          schedule.get("quartz_cron_expression", ""),
+            "parameters":        params,
+            "source_path":       params.get("source_path", ""),
+            "filename_pattern":  params.get("filename_pattern", ""),
+            "archive_path":      params.get("archive_path", ""),
+            "depends_on_tasks":  depends_on,
+            "pipeline_name":     list(jobs.keys())[0] if jobs else "",
+            "pipeline_tags":     tags,
+            "total_tasks":       len(all_tasks),
         }
 
     def _extract_from_text(self, content: str, job_name: str) -> dict[str, Any]:
@@ -163,24 +199,29 @@ class DABContextLoader:
         if not context:
             return "No DAB context available for this job."
 
-        lines = [
-            f"Job: {context.get('job_name', 'unknown')}",
-            f"Description: {context.get('description', 'N/A')}",
-            f"Pipeline layer: {context.get('layer', 'N/A')}",
-            f"Upstream system: {context.get('upstream_system', 'N/A')}",
-            f"Source table/path: {context.get('source_table') or context.get('source_path', 'N/A')}",
-            f"Target table: {context.get('target_table', 'N/A')}",
-            f"Target schema: {context.get('target_schema', 'N/A')}",
-            f"SLA: {context.get('sla', 'N/A')}",
-        ]
+        lines = []
 
+        if context.get("pipeline_name"):
+            lines.append(f"Pipeline: {context['pipeline_name']} ({context.get('total_tasks', '?')} tasks total)")
+        lines.append(f"Failed task: {context.get('task_key', context.get('job_name', 'unknown'))}")
+        lines.append(f"Description: {context.get('description', 'N/A')}")
+        lines.append(f"Pipeline layer: {context.get('layer', 'N/A')}")
+        lines.append(f"Upstream system: {context.get('upstream_system', 'N/A')}")
+        lines.append(f"Source table/path: {context.get('source_table') or context.get('source_path', 'N/A')}")
+        lines.append(f"Target table: {context.get('target_table', 'N/A')}")
+        lines.append(f"Target schema: {context.get('target_schema', 'N/A')}")
+        lines.append(f"SLA: {context.get('sla', 'N/A')}")
+
+        if context.get("depends_on_tasks"):
+            lines.append(f"Depends on tasks: {', '.join(context['depends_on_tasks'])}")
         if context.get("filename_pattern"):
             lines.append(f"Expected filename pattern: {context['filename_pattern']}")
         if context.get("archive_path"):
             lines.append(f"Archive path: {context['archive_path']}")
         if context.get("parameters"):
-            lines.append("Job parameters:")
+            lines.append("Task parameters:")
             for k, v in context["parameters"].items():
-                lines.append(f"  {k}: {v}")
+                if k not in ("sla", "upstream_system"):  # already shown above
+                    lines.append(f"  {k}: {v}")
 
         return "\n".join(lines)
