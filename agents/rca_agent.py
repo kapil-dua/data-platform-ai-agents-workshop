@@ -103,8 +103,8 @@ class RCAAgent:
             name=self.PROMPT_NAME,
             prompt_type="chat",
             fallback_messages=[
-                ("system", _FALLBACK_SYSTEM),
-                ("user",   _FALLBACK_USER),
+                ("system", Config._RCA_SYSTEM_PROMPT),
+                ("user",   Config._RCA_USER_PROMPT),
             ],
         )
         self._chain = self._prompt_template | self.llm_client.get_llm()

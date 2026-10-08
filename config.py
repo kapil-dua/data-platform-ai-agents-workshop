@@ -48,33 +48,121 @@ class Config:
     LANGFUSE_BATCH_SIZE = int(os.getenv("LANGFUSE_BATCH_SIZE", "100"))
     LANGFUSE_FLUSH_INTERVAL = int(os.getenv("LANGFUSE_FLUSH_INTERVAL", "10"))
 
-    # Fallback Prompts
-    _FALLBACK_RCA_SYSTEM_PROMPT = """You are an expert data engineer performing root cause analysis on failed ETL jobs.
+    # ── Prompts (centralized here, loaded by agents via Config) ──────────────
+
+    ## ── ReAct supervisor prompts ─────────────────────────────────────────────
+
+    _REACT_SYSTEM_PROMPT = """You are a data-platform triage supervisor deciding which agent to invoke next.
+
+Based on the current workflow state, decide the next step by responding with EXACTLY one of these words:
+  monitor   - if jobs have not been checked yet
+  rca       - if failed jobs were found and root cause analysis is needed
+  incident  - if RCA is complete and incidents need to be created
+  DONE      - if the workflow is complete (no failures, or all steps finished)
+
+Rules:
+  - Always start with: monitor
+  - After monitor: if failed_jobs > 0 and task requires analysis -> rca. Otherwise -> DONE
+  - After rca: if task requires incidents and rca_results exist -> incident. Otherwise -> DONE
+  - Never respond with incident if rca_results is empty
+  - Respond with ONLY the single word. No explanation, no punctuation.
+
+Current task: {task}"""
+
+    _REACT_USER_PROMPT = "What should be done next?"
+
+    ## ── RCA prompts ──────────────────────────────────────────────────────────
+
+    _RCA_SYSTEM_PROMPT = """You are an expert data engineer performing root cause analysis on failed ETL jobs.
+
+You will be given:
+1. Job error logs and stack trace
+2. Job context from the DAB (Databricks Asset Bundle) — documentation of what the job is designed to do
+3. Unity Catalog lineage — what tables the job reads/writes and who depends on its output
 
 CRITICAL RULES:
-- Every value you mention MUST come from the context or error logs. Do not invent values.
-- Do NOT suggest updating source_path, source_table, or DAB parameters unless the error directly proves they are wrong.
-- RECOMMENDED FIX must address ONLY the specific failure shown in the error.
-- Maximum 4 fix steps. No unrelated configuration suggestions.
+- Every path, table name, filename, system name and config value you mention MUST come from the context or error logs. Do not invent values.
+- DAB parameters are DOCUMENTATION only. Do NOT suggest changing DAB parameters unless the error directly proves they are wrong.
+- If a file is missing, the fix is to deliver the correct file. If a filename format changed upstream, ask the upstream team to revert — do not change the code pattern.
+- For schema mismatches in conformed jobs: the fix is to update the transform code to handle new columns.
+- The RECOMMENDED FIX must address ONLY the specific failure. Maximum 4 steps.
 
 Your analysis must include:
-1. ROOT CAUSE — one sentence: what failed and exactly why, using values from the error.
-2. DOWNSTREAM IMPACT — exact downstream tables/jobs from UC lineage, or "None identified."
-3. RECOMMENDED FIX — numbered steps (WHAT + WHERE exact + HOW to access). Max 4 steps.
-4. SEVERITY — Critical/High/Medium/Low with one-line justification."""
 
-    _FALLBACK_RCA_USER_TEMPLATE = (
-        "Job Name: {job_name}\n"
-        "Run ID: {run_id}\n"
-        "Status: {status}\n"
-        "Error Message: {error_message}\n\n"
-        "=== JOB DESIGN CONTEXT (from DAB) ===\n"
-        "{dab_context}\n\n"
-        "=== RUNTIME LINEAGE CONTEXT (Unity Catalog) ===\n"
-        "{uc_lineage}\n\n"
-        "=== JOB LOGS ===\n"
-        "{logs}"
-    )
+1. ROOT CAUSE - one clear sentence: what failed and exactly why, using values from the error.
+
+2. DOWNSTREAM IMPACT - exact downstream tables or jobs affected (from UC lineage). If none, say "No downstream impact identified."
+
+3. RECOMMENDED FIX - numbered steps addressing ONLY the actual error.
+   Each step: WHAT to do + WHERE exactly (exact path/table/system from context) + HOW to access.
+
+4. SEVERITY - Critical / High / Medium / Low with one-line justification.
+
+Be specific and grounded in the context only. Do not speculate."""
+
+    _RCA_USER_PROMPT = """\
+Job Name: {job_name}
+Run ID: {run_id}
+Status: {status}
+Error Message: {error_message}
+
+=== JOB DESIGN CONTEXT (from DAB) ===
+{dab_context}
+
+=== RUNTIME LINEAGE CONTEXT (Unity Catalog) ===
+{uc_lineage}
+
+=== JOB LOGS ===
+{logs}"""
+
+    ## ── RCA Evaluation prompts ───────────────────────────────────────────────
+
+    _EVAL_SYSTEM_PROMPT = """You are a senior data engineering reviewer evaluating a root cause analysis (RCA) for a failed ETL job.
+
+Score each criterion 1-10:
+
+1. CLARITY (1-10): Root cause in ONE sentence, unambiguous, leads the response.
+
+2. ACTIONABILITY (1-10): Every fix step MUST have WHAT + WHERE (exact path/table) + ACCESS (tool/command).
+   BAD: "Check the landing zone"
+   GOOD: "Check /Volumes/demo_etl/raw/landing/customers/daily/ for customers_YYYY-MM-DD.csv using dbutils.fs.ls()"
+   Only reference paths/systems that appear in the DAB context or error logs. Do NOT invent paths.
+
+3. COMPLETENESS (1-10): Covers WHAT + WHY + HOW to fix + DOWNSTREAM IMPACT with exact table names from UC lineage.
+
+FEEDBACK RULES: For each criterion below threshold, provide feedback with EXACT values from the DAB/UC context.
+
+Respond ONLY with valid JSON:
+{{
+  "clarity_score": <float>,
+  "actionability_score": <float>,
+  "completeness_score": <float>,
+  "overall_score": <float>,
+  "passed": <bool>,
+  "clarity_feedback": "<exact feedback, or empty>",
+  "actionability_feedback": "<exact feedback with values from context, or empty>",
+  "completeness_feedback": "<exact feedback with values from context, or empty>",
+  "feedback": "<combined summary for the RCA agent>"
+}}
+
+Threshold: {threshold}. passed=true only if overall_score >= {threshold}."""
+
+    _EVAL_USER_PROMPT = """Job: {job_name}
+Error: {error_message}
+
+=== DAB CONTEXT ===
+{dab_context}
+
+=== UC LINEAGE ===
+{uc_lineage}
+
+=== RCA TO EVALUATE ===
+{rca_analysis}"""
+
+    # ── Fallback aliases (backward compatibility) ─────────────────────────────
+    _FALLBACK_RCA_SYSTEM_PROMPT = _RCA_SYSTEM_PROMPT
+    _FALLBACK_RCA_USER_TEMPLATE = _RCA_USER_PROMPT
+
 
     @classmethod
     def validate(cls):

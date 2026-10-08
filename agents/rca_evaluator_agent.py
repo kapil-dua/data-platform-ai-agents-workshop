@@ -37,6 +37,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from models.llm_client import LLMClient
+from config import Config
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -57,92 +58,6 @@ class RCAEvaluation(BaseModel):
     actionability_feedback: str = Field(description="Specific actionability improvement with exact values, else empty")
     completeness_feedback:  str = Field(description="Specific completeness improvement with exact values, else empty")
     feedback:               str = Field(description="Combined feedback summary for the RCA agent")
-
-
-# ── Prompts ───────────────────────────────────────────────────────────────────
-
-_EVAL_SYSTEM = """You are a senior data engineering reviewer evaluating a root cause analysis (RCA) for a failed ETL job.
-
-The RCA agent had access to the DAB context and UC lineage shown below. Your job is to check
-whether the RCA actually USED this information correctly — not just whether it sounds good.
-
-Score each criterion 1-10:
-
-──────────────────────────────────────────────────────────────────
-1. CLARITY (1-10)
-   9-10: Root cause in ONE sentence, unambiguous, leads the response
-   7-8:  Clear but slightly verbose or buried
-   5-6:  Requires inference to understand the root cause
-   1-4:  Vague, missing, or buried in paragraphs
-
-──────────────────────────────────────────────────────────────────
-2. ACTIONABILITY (1-10)
-   Every fix step MUST have all three:
-     WHAT   — what to check or do
-     WHERE  — exact full path / full 3-part table name (catalog.schema.table) / exact system name
-     ACCESS — how to access it: tool name, permission needed, or exact command
-
-   Examples:
-   BAD  (score 1-4): "Check the SFTP landing zone for today's file"
-   GOOD (score 9-10): "Check SFTP landing zone /inbound/inventory/daily/ for inventory_2026-10-07.csv
-                       using WinSCP or sftp client. Requires SFTP read access (contact infra-ops@company.com)"
-
-   BAD  (score 1-4): "Verify the target table exists"
-   GOOD (score 9-10): "Verify table demo_etl.cleansed.inventory_daily exists in Unity Catalog
-                       under catalog=demo_etl, schema=cleansed. Check via: SELECT * FROM
-                       information_schema.tables WHERE table_schema='cleansed'"
-
-   BAD  (score 1-4): "Contact the upstream team"
-   GOOD (score 9-10): "Contact the WMS (Warehouse Management System) team to verify
-                       whether the export job scheduled at 01:00 UTC ran successfully on 2026-10-07"
-
-   For each step that is missing WHERE or ACCESS, your feedback must supply the exact
-   value from the DAB context or UC lineage provided below.
-   IMPORTANT: Only reference paths, tables, and systems that appear in the DAB context or error logs.
-   Do NOT invent abfss://, SFTP, or other paths that are not explicitly in the provided context.
-   If a path is not in the context, say "path not available in context" rather than inventing one.
-
-──────────────────────────────────────────────────────────────────
-3. COMPLETENESS (1-10)
-   9-10: Covers WHAT failed + WHY it failed + HOW to fix (with all steps) + DOWNSTREAM IMPACT
-         with exact table/job names from UC lineage
-   7-8:  Missing one of: downstream impact or exact table names
-   5-6:  Only covers what and why, no fix steps
-   1-4:  Incomplete
-
-──────────────────────────────────────────────────────────────────
-FEEDBACK RULES:
-- For each criterion below threshold, provide feedback that includes EXACT values
-  from the DAB context and UC lineage that were available but not used.
-- Do NOT say "add the path" — say "the path is abfss://raw@... (from DAB source_path)"
-- Do NOT say "mention downstream tables" — say "downstream table is demo_etl.conformed.fact_inventory_summary (from UC lineage)"
-
-Respond ONLY with valid JSON:
-{{
-  "clarity_score": <float>,
-  "actionability_score": <float>,
-  "completeness_score": <float>,
-  "overall_score": <float>,
-  "passed": <bool>,
-  "clarity_feedback": "<exact feedback with values, or empty>",
-  "actionability_feedback": "<exact feedback with values from DAB/UC, or empty>",
-  "completeness_feedback": "<exact feedback with values from DAB/UC, or empty>",
-  "feedback": "<combined one-paragraph summary for the RCA agent>"
-}}
-
-Threshold: {threshold}. passed=true only if overall_score >= {threshold}."""
-
-_EVAL_USER = """Job: {job_name}
-Error: {error_message}
-
-=== DAB CONTEXT (what was available to RCA agent) ===
-{dab_context}
-
-=== UC LINEAGE (what was available to RCA agent) ===
-{uc_lineage}
-
-=== RCA TO EVALUATE ===
-{rca_analysis}"""
 
 
 # ── Agent ─────────────────────────────────────────────────────────────────────
@@ -185,8 +100,8 @@ class RCAEvaluatorAgent:
             self.llm = LLMClient().get_llm()
 
         self._prompt = ChatPromptTemplate.from_messages([
-            ("system", _EVAL_SYSTEM),
-            ("user",   _EVAL_USER),
+            ("system", Config._EVAL_SYSTEM_PROMPT),
+            ("user",   Config._EVAL_USER_PROMPT),
         ])
 
     def _parse_json_response(self, content: str) -> dict:

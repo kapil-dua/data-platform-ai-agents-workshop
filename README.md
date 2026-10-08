@@ -1,6 +1,6 @@
-# Data Engineering Platform — AI Agents
+# Data Engineering Platform — AI Agents Workshop
 
-A LangGraph-based multi-agent application that monitors Databricks ETL pipelines, performs root cause analysis on failures using DAB context and Unity Catalog lineage, and creates Jira incidents — with a human-in-the-loop approval step and full Langfuse observability.
+A LangGraph-based multi-agent supervisor pattern application that monitors Databricks ETL pipelines, performs root cause analysis on failures using DAB context and Unity Catalog lineage, and creates Jira incidents — with a human-in-the-loop approval step and full Langfuse observability.
 
 ---
 
@@ -35,7 +35,7 @@ The RCA agent enriches every analysis with two context sources:
 
 | Source | What it provides |
 |---|---|
-| **DAB YAML** (`.dab/etl_nightly_medallion/databricks.yml`) | Job design intent: source paths, filename patterns, upstream system, target tables, SLA, archive paths |
+| **DAB YAML** (`.dab/databricks.yml`) | Job design intent: source paths, filename patterns, upstream system, target tables, SLA, archive paths |
 | **Unity Catalog Lineage** (`system.access.table_lineage`) | Runtime history: which tables were read/written, last successful write time, downstream consumers affected |
 
 ---
@@ -75,13 +75,13 @@ data-platform-ai-agents/
 │   └── durable_memory.py           # SQLite workflow audit store
 │
 ├── scripts/
-│   ├── setup.py                    # One-time workshop environment setup
-│   ├── migrate_prompts_to_langfuse.py
-│   └── test_jira_mcp.py
+│   ├── databricks_setup.py         # One-time workshop databricks environment setup
+│   └── migrate_prompts_to_langfuse.py
 │
 └── .dab/
-    └── etl_nightly_medallion/
-        └── databricks.yml          # DAB bundle — pipeline context for RCA agent
+    ├── databricks.yml              # DAB bundle manifest
+    └── resources/                  
+        └── <job_name>.yml          # One job definition per YAML file
 ```
 
 ---
@@ -115,11 +115,10 @@ pip install -r requirements.txt
 ```bash
 cp .env.example .env
 ```
-> Fill in Model Provider, Data Platform, Atlassian Jira, and Langfuse configurations - follow the section "2. Dependency Setup"
 
-
-3. Run the dependency scripts (one-time setup):
->  Follow the section "2. Dependency Setup"
+3. Run the dependency setup (one-time setup):
+> Follow the section 2. Dependency Setup
+> Fill .env file with Model Provider, Data Platform, Atlassian Jira, and Langfuse configurations
 
 
 4. Run the application:
@@ -146,11 +145,10 @@ pip install -r requirements.txt
 ```powershell
 copy .env.example .env
 ```
-> Fill in Model Provider, Data Platform, Atlassian Jira, and Langfuse configurations - follow the section "2. Dependency Setup"
 
-
-3. Run the dependency scripts (one-time setup):
-> Follow the section "2. Dependency Setup"
+3. Run the Dependency Setup (one-time setup)
+> Follow the section 2. Dependency Setup
+> Fill .env file with Model Provider, Data Platform, Atlassian Jira, and Langfuse configurations
 
 
 4. Run the application:
@@ -163,7 +161,7 @@ The application will open in your browser at `http://localhost:8501`
 
 ## 2. Dependency Setup
 
-### Databricks (Data Platform + LLM)
+### 2.1 Databricks (Data Platform + LLM)
 
 **Sign up:** https://www.databricks.com/try-databricks — any email, no credit card, $400 DBU free credit.
 
@@ -171,19 +169,15 @@ The application will open in your browser at `http://localhost:8501`
 - **Personal Access Token** — User Settings → Developer → Access Tokens → Generate New Token → `DATABRICKS_TOKEN`
 - **AI Gateway** — left sidebar → AI/ML → AI Gateway tab. Foundation models appear automatically ~5 mins after signup. Click a model → Make your first request → Python → copy `base_url` and `model` → `DATABRICKS_AI_GATEWAY` and `DATABRICKS_MODEL_ID`
 
-### 2. Groq (free alternative LLM)
-
-**Sign up:** https://console.groq.com → API Keys → Create API Key → `GROQ_API_KEY`
-
-**Create some jobs (so Monitor Agent has data):**
+**Create Sample Databricks jobs (so Monitor Agent has data):**
 - Run this once to create sample Databricks notebooks and jobs that simulate realistic ETL failures. The Monitor and RCA agents will pick these up automatically.
 
 ```bash
 # macOS / Linux / WSL
-python scripts/create_demo_jobs.py
+python scripts/databricks_setup.py
 
 # Windows
-python scripts\create_demo_jobs.py
+python scripts\databricks_setup.py
 ```
 
 **What gets created:**
@@ -214,7 +208,7 @@ The failing tasks raise realistic premature-exit errors (0 records found, schema
 
 ---
 
-### Groq (Alternative LLM Provider — Free)
+### 2.2 Groq (Alternative LLM Provider — Free)
 
 Use this if Databricks AI Gateway is not available or as a backup.
 
@@ -232,7 +226,7 @@ Use this if Databricks AI Gateway is not available or as a backup.
 
 ---
 
-### Langfuse (Observability — Optional)
+### 2.3 Langfuse (Observability — Optional)
 
 Used for tracing agent execution and managing LLM prompts. The app runs fine without it — set `LANGFUSE_ENABLED=false` to skip.
 
@@ -255,7 +249,7 @@ python scripts\migrate_prompts_to_langfuse.py
 
 ---
 
-### Atlassian Jira (Incident Creation — Optional)
+### 2.4 Atlassian Jira (Incident Creation — Optional)
 
 Used for creating Jira tickets when job failures are detected. Set `JIRA_ENABLED=false` to skip — demo incidents are created instead.
 
