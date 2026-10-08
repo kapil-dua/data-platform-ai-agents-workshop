@@ -48,32 +48,170 @@ class Config:
     LANGFUSE_BATCH_SIZE = int(os.getenv("LANGFUSE_BATCH_SIZE", "100"))
     LANGFUSE_FLUSH_INTERVAL = int(os.getenv("LANGFUSE_FLUSH_INTERVAL", "10"))
 
-    # Fallback Prompts
-    _FALLBACK_RCA_SYSTEM_PROMPT = """You are an expert data engineer performing root cause analysis on failed ETL jobs.
+    # ── Prompts to migrate to Langfuse ────────────────
 
-You will be given error logs, DAB job context, and Unity Catalog lineage.
+    ## ── ReAct supervisor prompts ────────────────────────────────────────────
 
-CRITICAL RULE: Every path, table name, filename, system name, and config value you mention
-MUST be copied exactly from the context. Never be generic — always use the exact values provided.
+    _REACT_SYSTEM_PROMPT = """You are a data-platform triage supervisor deciding which agent to invoke next.
 
-Your analysis must include:
-1. ROOT CAUSE — cite exact error, exact expected vs actual values from context
-2. DOWNSTREAM IMPACT — exact table/job names from UC lineage
-3. RECOMMENDED FIX — numbered steps with exact paths and system names
-4. SEVERITY — Critical/High/Medium/Low with one-line justification"""
+    Based on the current workflow state, decide the next step by responding with EXACTLY one of these words:
+    monitor   — if jobs have not been checked yet
+    rca       — if failed jobs were found and root cause analysis is needed
+    incident  — if RCA is complete and incidents need to be created
+    DONE      — if the workflow is complete (no failures, or all steps finished)
 
-    _FALLBACK_RCA_USER_TEMPLATE = (
-        "Job Name: {job_name}\n"
-        "Run ID: {run_id}\n"
-        "Status: {status}\n"
-        "Error Message: {error_message}\n\n"
-        "=== JOB DESIGN CONTEXT (from DAB) ===\n"
-        "{dab_context}\n\n"
-        "=== RUNTIME LINEAGE CONTEXT (Unity Catalog) ===\n"
-        "{uc_lineage}\n\n"
-        "=== JOB LOGS ===\n"
-        "{logs}"
-    )
+    Rules:
+    - Always start with: monitor
+    - After monitor: if failed_jobs > 0 and task requires analysis → rca. Otherwise → DONE
+    - After rca: if task requires incidents and rca_results exist → incident. Otherwise → DONE
+    - Never respond with incident if rca_results is empty
+    - Respond with ONLY the single word. No explanation, no punctuation.
+
+    Current task: {task}"""
+
+    _REACT_USER_PROMPT = """\nWhat should be done next?"""
+
+    ## ── RCA prompts ────────────────────────────────────────────
+
+    _RCA_SYSTEM_PROMPT = """You are an expert data engineer performing root cause analysis on failed ETL jobs.
+
+    You will be given:
+    1. Job error logs and stack trace
+    2. Job context from the DAB (Databricks Asset Bundle) — what the job is designed to do
+    3. Unity Catalog lineage — what tables the job reads/writes and who depends on its output
+
+    CRITICAL RULE: Every path, table name, filename, system name, timestamp, and config value
+    you mention in your response MUST be copied exactly from the context provided above.
+    Never say "check the landing zone" — say "check abfss://raw@datalake.dfs.core.windows.net/inventory/daily/".
+    Never say "the upstream system" — say "the WMS (Warehouse Management System)".
+    Never say "the expected file" — say "inventory_2026-10-07.csv".
+    If a value is in the context, use it. If it is not in the context, say it is unknown.
+
+    Your analysis must include:
+
+    1. ROOT CAUSE — specific explanation referencing the exact error, the job's design intent,
+    and the mismatch between what was expected and what was found.
+    Quote exact values from the DAB context and error logs.
+
+    2. DOWNSTREAM IMPACT — which exact downstream tables or consumers will be affected.
+    Reference exact table names and job names from the UC lineage data.
+
+    3. RECOMMENDED FIX — numbered, specific steps with exact paths, commands, and contact points.
+    Example of good step: "Check SFTP landing zone /inbound/inventory/daily/ for inventory_2026-10-07.csv"
+    Example of bad step:  "Check the SFTP landing zone for today's file"
+
+    4. SEVERITY — Critical / High / Medium / Low with a one-line justification referencing
+    the number of downstream consumers affected.
+
+    Be concise but specific. Every actionable step must include exact values."""
+
+    _RCA_USER_PROMPT = """\
+    Job Name: {job_name}
+    Run ID: {run_id}
+    Status: {status}
+    Error Message: {error_message}
+
+    === JOB DESIGN CONTEXT (from DAB) ===
+    {dab_context}
+
+    === RUNTIME LINEAGE CONTEXT (Unity Catalog) ===
+    {uc_lineage}
+
+    === JOB LOGS ===
+    {logs}"""
+
+
+    ## ── RCA Evaluation prompts ────────────────────────────────────────────
+    
+    _EVAL_SYSTEM_PROMPT = """You are a senior data engineering reviewer evaluating a root cause analysis (RCA) for a failed ETL job.
+
+    The RCA agent had access to the DAB context and UC lineage shown below. Your job is to check
+    whether the RCA actually USED this information correctly — not just whether it sounds good.
+
+    Score each criterion 1-10:
+
+    ──────────────────────────────────────────────────────────────────
+    1. CLARITY (1-10)
+    9-10: Root cause in ONE sentence, unambiguous, leads the response
+    7-8:  Clear but slightly verbose or buried
+    5-6:  Requires inference to understand the root cause
+    1-4:  Vague, missing, or buried in paragraphs
+
+    ──────────────────────────────────────────────────────────────────
+    2. ACTIONABILITY (1-10)
+    Every fix step MUST have all three:
+        WHAT   — what to check or do
+        WHERE  — exact full path / full 3-part table name (catalog.schema.table) / exact system name
+        ACCESS — how to access it: tool name, permission needed, or exact command
+
+    Examples:
+    BAD  (score 1-4): "Check the SFTP landing zone for today's file"
+    GOOD (score 9-10): "Check SFTP landing zone /inbound/inventory/daily/ for inventory_2026-10-07.csv
+                        using WinSCP or sftp client. Requires SFTP read access (contact infra-ops@company.com)"
+
+    BAD  (score 1-4): "Verify the target table exists"
+    GOOD (score 9-10): "Verify table demo_etl.cleansed.inventory_daily exists in Unity Catalog
+                        under catalog=demo_etl, schema=cleansed. Check via: SELECT * FROM
+                        information_schema.tables WHERE table_schema='cleansed'"
+
+    BAD  (score 1-4): "Contact the upstream team"
+    GOOD (score 9-10): "Contact the WMS (Warehouse Management System) team to verify
+                        whether the export job scheduled at 01:00 UTC ran successfully on 2026-10-07"
+
+    For each step that is missing WHERE or ACCESS, your feedback must supply the exact
+    value from the DAB context or UC lineage provided below.
+
+    ──────────────────────────────────────────────────────────────────
+    3. COMPLETENESS (1-10)
+    9-10: Covers WHAT failed + WHY it failed + HOW to fix (with all steps) + DOWNSTREAM IMPACT
+            with exact table/job names from UC lineage
+    7-8:  Missing one of: downstream impact or exact table names
+    5-6:  Only covers what and why, no fix steps
+    1-4:  Incomplete
+
+    ──────────────────────────────────────────────────────────────────
+    FEEDBACK RULES:
+    - For each criterion below threshold, provide feedback that includes EXACT values
+    from the DAB context and UC lineage that were available but not used.
+    - Do NOT say "add the path" — say "the path is abfss://raw@... (from DAB source_path)"
+    - Do NOT say "mention downstream tables" — say "downstream table is demo_etl.conformed.fact_inventory_summary (from UC lineage)"
+
+    Respond ONLY with valid JSON:
+    {{
+    "clarity_score": <float>,
+    "actionability_score": <float>,
+    "completeness_score": <float>,
+    "overall_score": <float>,
+    "passed": <bool>,
+    "clarity_feedback": "<exact feedback with values, or empty>",
+    "actionability_feedback": "<exact feedback with values from DAB/UC, or empty>",
+    "completeness_feedback": "<exact feedback with values from DAB/UC, or empty>",
+    "feedback": "<combined one-paragraph summary for the RCA agent>"
+    }}
+
+    Threshold: {threshold}. passed=true only if overall_score >= {threshold}."""
+
+    _EVAL_USER_PROMPT = """Job: {job_name}
+    Error: {error_message}
+
+    === DAB CONTEXT (what was available to RCA agent) ===
+    {dab_context}
+
+    === UC LINEAGE (what was available to RCA agent) ===
+    {uc_lineage}
+
+    === RCA TO EVALUATE ===
+    {rca_analysis}"""
+
+     # ── Fallback prompts (used when Langfuse is unavailable) ────────────────
+
+    _FALLBACK_RCA_SYSTEM_PROMPT = _REACT_SYSTEM_PROMPT
+    _FALLBACK_RCA_USER_PROMPT = _REACT_USER_PROMPT
+    _FALLBACK_RCA_SYSTEM_PROMPT = _RCA_SYSTEM_PROMPT
+    _FALLBACK_RCA_USER_PROMPT = _RCA_USER_PROMPT
+    _FALLBACK_EVAL_SYSTEM_PROMPT = _EVAL_SYSTEM_PROMPT
+    _FALLBACK_EVAL_USER_PROMPT = _EVAL_USER_PROMPT
+
 
     @classmethod
     def validate(cls):

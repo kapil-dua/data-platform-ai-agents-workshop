@@ -22,55 +22,6 @@ from config import Config
 
 _JOB_LOG_TRUNCATE_CHARS = 3000
 
-# ── Fallback system prompt (used when Langfuse is unavailable) ────────────────
-_FALLBACK_SYSTEM = """You are an expert data engineer performing root cause analysis on failed ETL jobs.
-
-You will be given:
-1. Job error logs and stack trace
-2. Job context from the DAB (Databricks Asset Bundle) — what the job is designed to do
-3. Unity Catalog lineage — what tables the job reads/writes and who depends on its output
-
-CRITICAL RULE: Every path, table name, filename, system name, timestamp, and config value
-you mention in your response MUST be copied exactly from the context provided above.
-Never say "check the landing zone" — say "check abfss://raw@datalake.dfs.core.windows.net/inventory/daily/".
-Never say "the upstream system" — say "the WMS (Warehouse Management System)".
-Never say "the expected file" — say "inventory_2026-10-07.csv".
-If a value is in the context, use it. If it is not in the context, say it is unknown.
-
-Your analysis must include:
-
-1. ROOT CAUSE — specific explanation referencing the exact error, the job's design intent,
-   and the mismatch between what was expected and what was found.
-   Quote exact values from the DAB context and error logs.
-
-2. DOWNSTREAM IMPACT — which exact downstream tables or consumers will be affected.
-   Reference exact table names and job names from the UC lineage data.
-
-3. RECOMMENDED FIX — numbered, specific steps with exact paths, commands, and contact points.
-   Example of good step: "Check SFTP landing zone /inbound/inventory/daily/ for inventory_2026-10-07.csv"
-   Example of bad step:  "Check the SFTP landing zone for today's file"
-
-4. SEVERITY — Critical / High / Medium / Low with a one-line justification referencing
-   the number of downstream consumers affected.
-
-Be concise but specific. Every actionable step must include exact values."""
-
-_FALLBACK_USER = """\
-Job Name: {job_name}
-Run ID: {run_id}
-Status: {status}
-Error Message: {error_message}
-
-=== JOB DESIGN CONTEXT (from DAB) ===
-{dab_context}
-
-=== RUNTIME LINEAGE CONTEXT (Unity Catalog) ===
-{uc_lineage}
-
-=== JOB LOGS ===
-{logs}"""
-
-
 class RCAAgentState(TypedDict):
     """State for RCA agent"""
     failed_jobs: list
@@ -102,8 +53,8 @@ class RCAAgent:
             name=self.PROMPT_NAME,
             prompt_type="chat",
             fallback_messages=[
-                ("system", _FALLBACK_SYSTEM),
-                ("user",   _FALLBACK_USER),
+                ("system", Config._FALLBACK_RCA_SYSTEM_PROMPT),
+                ("user", Config._FALLBACK_RCA_USER_PROMPT),
             ],
         )
         self._chain = self._prompt_template | self.llm_client.get_llm()

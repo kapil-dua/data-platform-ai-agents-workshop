@@ -86,26 +86,6 @@ class SupervisorState(TypedDict):
     execution_log:    Annotated[list[str],            operator.add]
 
 
-# ── ReAct supervisor system prompt ────────────────────────────────────────────
-
-_REACT_SYSTEM = """You are a data-platform triage supervisor deciding which agent to invoke next.
-
-Based on the current workflow state, decide the next step by responding with EXACTLY one of these words:
-  monitor   — if jobs have not been checked yet
-  rca       — if failed jobs were found and root cause analysis is needed
-  incident  — if RCA is complete and incidents need to be created
-  DONE      — if the workflow is complete (no failures, or all steps finished)
-
-Rules:
-  - Always start with: monitor
-  - After monitor: if failed_jobs > 0 and task requires analysis → rca. Otherwise → DONE
-  - After rca: if task requires incidents and rca_results exist → incident. Otherwise → DONE
-  - Never respond with incident if rca_results is empty
-  - Respond with ONLY the single word. No explanation, no punctuation.
-
-Current task: {task}"""
-
-
 class SupervisorAgent:
     """Coordinate specialized agents through a ReAct + Evaluator-loop LangGraph workflow."""
 
@@ -210,8 +190,8 @@ class SupervisorAgent:
         )
 
         messages = [
-            SystemMessage(content=_REACT_SYSTEM.format(task=task)),
-            HumanMessage(content=context + "\nWhat should be done next?"),
+            SystemMessage(content=Config._REACT_SYSTEM_PROMPT.format(task=task)),
+            HumanMessage(content=context + Config._REACT_USER_PROMPT),
         ]
 
         llm       = LLMClient().get_llm()
