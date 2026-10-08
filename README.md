@@ -147,7 +147,7 @@ pip install -r requirements.txt
 copy .env.example .env
 ```
 
-3. Run the Dependency Setup (one-time setup) - Follow the section "2. Dependency Setup"
+3. Run the Dependency Setup (one-time setup) - Follow the section 2. Dependency Setup
 > Fill .env file with Model Provider, Data Platform, Atlassian Jira, and Langfuse configurations - follow the section "2. Dependency Setup"
 
 
