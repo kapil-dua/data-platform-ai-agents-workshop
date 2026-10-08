@@ -13,7 +13,7 @@ Creates the full demo environment for the FLO 2026 workshop:
 Total setup time: ~5-6 minutes (mostly job run cold starts)
 
 Usage:
-    python scripts/setup.py
+    python scripts/databricks_setup.py
 
 Required environment variables (.env):
     DATABRICKS_WORKSPACE_HOST, DATABRICKS_TOKEN
