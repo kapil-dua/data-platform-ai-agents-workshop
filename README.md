@@ -115,11 +115,10 @@ pip install -r requirements.txt
 ```bash
 cp .env.example .env
 ```
-> Fill in Model Provider, Data Platform, Atlassian Jira, and Langfuse configurations - follow the section "2. Dependency Setup"
 
-
-3. Run the dependency scripts (one-time setup):
->  Follow the section "2.1 Databricks Setup"
+3. Run the dependency setup (one-time setup):
+> Follow the section 2. Dependency Setup
+> Fill .env file with Model Provider, Data Platform, Atlassian Jira, and Langfuse configurations
 
 
 4. Run the application:
@@ -147,8 +146,9 @@ pip install -r requirements.txt
 copy .env.example .env
 ```
 
-3. Run the Dependency Setup (one-time setup) - Follow the section 2. Dependency Setup
-> Fill .env file with Model Provider, Data Platform, Atlassian Jira, and Langfuse configurations - follow the section "2. Dependency Setup"
+3. Run the Dependency Setup (one-time setup)
+> Follow the section 2. Dependency Setup
+> Fill .env file with Model Provider, Data Platform, Atlassian Jira, and Langfuse configurations
 
 
 4. Run the application:
