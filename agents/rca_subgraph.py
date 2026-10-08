@@ -88,11 +88,18 @@ def _make_eval_node(evaluator_agent, uc_fetcher):
         if Config.MODEL_PROVIDER == "groq":
             time.sleep(int(os.getenv("RCA_EVAL_SLEEP_S", "8")))
 
+        import re as _re
+        # Remove abfss:// references from evaluator context — they don't exist in this workspace
+        # and cause the evaluator to hallucinate abfss fix steps
+        clean_dab = _re.sub(r'abfss://\S+', '[ADLS path — not applicable in this environment]',
+                            state.get("dab_text", ""))
+        clean_dab = _re.sub(r'Source table \(for UC lineage only\):.*\n?', '', clean_dab)
+
         evaluation = evaluator_agent.evaluate(
             job_name=rca.get("job_name", ""),
             error_message=rca.get("error_message", ""),
             rca_analysis=rca.get("root_cause", ""),
-            dab_context=state.get("dab_text", ""),
+            dab_context=clean_dab,
             uc_lineage=state.get("uc_text", ""),
         )
 
@@ -100,7 +107,7 @@ def _make_eval_node(evaluator_agent, uc_fetcher):
             **rca,
             "eval_score":      evaluation.overall_score,
             "eval_passed":     evaluation.passed,
-            "eval_iterations": iteration,
+            "eval_iterations": iteration,  # this iteration number
             "eval_scores_breakdown": {
                 "clarity":       evaluation.clarity_score,
                 "actionability": evaluation.actionability_score,
@@ -114,7 +121,8 @@ def _make_eval_node(evaluator_agent, uc_fetcher):
 
         print(
             f"[RCA Evaluator] {rca.get('job_name','?')} "
-            f"iter={iteration} score={evaluation.overall_score:.1f} "
+            f"iter={iteration}/{int(os.getenv('RCA_EVAL_MAX_ITERATIONS', '3'))} "
+            f"score={evaluation.overall_score:.1f} "
             f"passed={evaluation.passed}"
         )
 

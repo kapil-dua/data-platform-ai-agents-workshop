@@ -45,6 +45,8 @@ def initialize_session_state():
         st.session_state.workflow_task = "monitor_analyze_incident"
     if 'mode' not in st.session_state:
         st.session_state.mode = "manual"  # "ticker" | "manual"
+    if 'monitoring_running' not in st.session_state:
+        st.session_state.monitoring_running = False
 
 
 def respond_to_incident_review(decisions: list[dict]) -> bool:
@@ -83,19 +85,13 @@ def display_header():
         [data-testid="stMetricLabel"] p { font-size: 0.78rem; }
         [data-testid="stMetricValue"]   { font-size: 0.9rem;  }
         [data-testid="stMetric"]        { padding-top: 0.2rem; padding-bottom: 0.2rem; }
-        .centered-title {
-            text-align: center;
-            font-size: 1.6rem;
-            font-weight: 700;
-            margin-bottom: 0.1rem;
-            margin-top: 0;
-        }
-        .block-container { padding-top: 0.8rem !important; }
+        .block-container { padding-top: 2.5rem !important; }
+        .stGraphVizChart svg { max-height: 320px; width: 100% !important; }
         </style>
         """,
         unsafe_allow_html=True,
     )
-    st.markdown('<div class="centered-title">🔍 Data Platform: AI Agents</div>', unsafe_allow_html=True)
+    st.markdown("### 🔍 Data Platform: AI Agents", unsafe_allow_html=False)
     st.markdown("---")
 
     col1, col2, col3 = st.columns(3)
@@ -270,7 +266,7 @@ def display_sidebar():
                 "▶️ Run Monitoring Now",
                 type="primary",
                 use_container_width=True,
-                disabled=review_pending,
+                disabled=review_pending or st.session_state.monitoring_running,
             ):
                 st.session_state.workflow_task = "monitor_analyze_incident"
                 st.session_state.monitoring_requested = True
@@ -330,20 +326,18 @@ def display_sidebar():
 
 def run_monitoring():
     """Execute the monitoring workflow with live streaming UI updates."""
+    st.session_state.monitoring_running = True
     try:
         st.session_state.last_run_time = datetime.now()
-
         supervisor = SupervisorAgent()
 
-        # ── Live status placeholders ───────────────────────────────────────
-        status_header = st.empty()
-        jobs_placeholder   = st.empty()
-        rca_placeholder    = st.empty()
-        eval_placeholder   = st.empty()
+        status_header     = st.empty()
+        graph_placeholder = st.empty()
+        jobs_placeholder  = st.empty()
+        rca_placeholder   = st.empty()
 
         status_header.info("⏳ Workflow starting...")
-
-        rca_in_progress: dict = {}   # job_name → status string
+        rca_in_progress: dict = {}
 
         for chunk in supervisor.stream_monitoring_workflow(
             task=st.session_state.workflow_task,
@@ -351,97 +345,75 @@ def run_monitoring():
             node  = chunk["node"]
             state = chunk["state"]
 
-            # ── Monitor completed ─────────────────────────────────────────
+            # Update live graph after every node
+            workflow_graph = state.get("workflow_graph")
+            if workflow_graph:
+                with graph_placeholder.container():
+                    st.caption("Executed path highlighted in green")
+                    st.graphviz_chart(workflow_graph, use_container_width=True)
+
             if node == "monitor":
                 jobs_data    = state.get("jobs_data", {})
                 failed_jobs  = state.get("failed_jobs", [])
                 failed_count = jobs_data.get("failed_count", len(failed_jobs))
                 total        = jobs_data.get("total_jobs", 0)
-
-                status_header.success(
-                    f"📊 Monitor complete — {total} jobs checked, "
-                    f"{failed_count} failed"
-                )
-
+                status_header.success(f"📊 Monitor complete — {total} jobs checked, {failed_count} failed")
                 if failed_jobs:
                     with jobs_placeholder.container():
                         st.markdown("**Failed jobs found — starting RCA:**")
                         for j in failed_jobs:
                             st.markdown(f"- ❌ `{j['job_name']}`")
-                        rca_in_progress = {j["job_name"]: "⏳ queued" for j in failed_jobs}
+                    rca_in_progress = {j["job_name"]: "⏳ queued" for j in failed_jobs}
 
-            # ── RCA fan-out started ───────────────────────────────────────
             elif node == "rca_fan_out":
                 status_header.info("🔍 RCA Fan-out — dispatching parallel analysis...")
 
-            # ── One RCA completed ─────────────────────────────────────────
-            elif node == "rca":
+            elif node == "rca_subgraph":
                 rca_results = state.get("rca_results", [])
                 for r in rca_results:
-                    rca_in_progress[r["job_name"]] = "✅ RCA done — awaiting evaluation"
-
-                with rca_placeholder.container():
-                    st.markdown("**RCA Progress:**")
-                    for jn, status in rca_in_progress.items():
-                        st.markdown(f"- `{jn}` — {status}")
-
-            # ── Evaluator running ─────────────────────────────────────────
-            elif node == "rca_evaluator":
-                rca_results = state.get("rca_results", [])
-                for r in rca_results:
-                    score = r.get("eval_score")
+                    score  = r.get("eval_score")
                     passed = r.get("eval_passed")
                     iters  = r.get("eval_iterations", 1)
                     if score is not None:
-                        icon   = "✅" if passed else f"🔄 retry ({iters})"
-                        rca_in_progress[r["job_name"]] = (
-                            f"{icon} Score: {score:.1f}/10"
-                        )
+                        icon = "✅" if passed else f"🔄 retry ({iters})"
+                        rca_in_progress[r["job_name"]] = f"{icon} Score: {score:.1f}/10"
                     else:
-                        rca_in_progress[r["job_name"]] = "📐 evaluating..."
+                        rca_in_progress[r["job_name"]] = "✅ RCA done — evaluating..."
+                with rca_placeholder.container():
+                    st.markdown("**RCA Progress:**")
+                    for jn, s in rca_in_progress.items():
+                        st.markdown(f"- `{jn}` — {s}")
 
-                with eval_placeholder.container():
-                    st.markdown("**Evaluation Progress:**")
-                    for jn, status in rca_in_progress.items():
-                        st.markdown(f"- `{jn}` — {status}")
+            elif node == "rca_evaluator":
+                status_header.info("📐 All RCAs evaluated")
 
-                status_header.info("📐 RCA Evaluator running — checking quality...")
-
-            # ── HITL interrupt ────────────────────────────────────────────
             elif node == "__interrupt__":
                 status_header.warning("🧑‍⚖️ Workflow paused — human review required")
                 st.session_state.results = state
                 st.session_state.monitoring_complete = True
                 st.session_state.monitoring_requested = False
-                status_header.empty()
-                jobs_placeholder.empty()
-                rca_placeholder.empty()
-                eval_placeholder.empty()
+                st.session_state.monitoring_running = False
+                graph_placeholder.empty(); jobs_placeholder.empty(); rca_placeholder.empty()
                 st.rerun()
                 return
 
-            # ── Workflow complete ─────────────────────────────────────────
             elif node == "__end__":
                 st.session_state.results = state
                 st.session_state.monitoring_complete = True
                 st.session_state.monitoring_requested = False
-
-                # Clear live placeholders — display_results() will render final UI
-                status_header.empty()
-                jobs_placeholder.empty()
-                rca_placeholder.empty()
-                eval_placeholder.empty()
-
+                st.session_state.monitoring_running = False
+                status_header.empty(); graph_placeholder.empty()
+                jobs_placeholder.empty(); rca_placeholder.empty()
                 st.success("✅ Workflow completed!")
                 st.rerun()
                 return
 
     except Exception as e:
+        st.session_state.monitoring_running = False
         st.error(f"❌ Error during monitoring: {str(e)}")
         st.exception(e)
 
 
-def load_ticker_results() -> None:
     """Read the latest ticker result from SQLite and update session state."""
     store = WorkflowStore()
     result = store.get_latest_result()
@@ -536,7 +508,11 @@ def display_results():
                     st.text(f"Run ID: {rca['run_id']}")
                     st.text(f"Severity: {rca['severity']}")
                     if rca.get("error_message"):
-                        st.text(f"Error: {str(rca['error_message'])[:200]}...")
+                        err = str(rca['error_message'])
+                        if err and err.lower() not in ("n/a", "", "check run details") \
+                                and "workload failed" not in err.lower():
+                            st.write("**Error:**")
+                            st.code(err, language=None)
 
                     if eval_score is not None:
                         st.write("**Evaluator Scores:**")
@@ -563,13 +539,10 @@ def display_results():
                                 if rca.get(fb_key):
                                     st.caption(f"**{fb_label}:** {rca[fb_key]}")
                 with col2:
-                    st.write("**Root Cause:**")
-                    st.write(rca["root_cause"])
-
-                if rca.get("recommendations"):
-                    st.write("**Recommendations:**")
-                    for rec in rca["recommendations"]:
-                        st.write(f"• {rec}")
+                    # Always show the full LLM response — it contains all sections
+                    # including root cause, downstream impact, recommended fix, severity
+                    full = rca.get("_full_response") or rca.get("root_cause", "")
+                    st.write(full)
 
     incident_results = results.get("incident_results", [])
     pending_review = results.get("__interrupt__", [])
@@ -605,11 +578,14 @@ def display_results():
                             st.write(f"• {rec}")
 
                 with col_controls:
-                    approved = st.checkbox(
-                        "✅ Approve for ticket creation",
-                        value=True,
+                    decision = st.radio(
+                        "Decision",
+                        options=["🟢 Approve", "🔴 Decline"],
+                        index=0,
                         key=f"approve_{idx}_{incident.get('run_id')}",
+                        horizontal=False,
                     )
+                    approved = decision == "🟢 Approve"
                     severity_override = st.selectbox(
                         "Severity",
                         options=SEVERITIES,
@@ -636,24 +612,17 @@ def display_results():
 
             st.markdown("")
             approved_count = sum(1 for d in per_incident if d["approved"])
-            st.caption(f"{approved_count} of {len(incidents)} incident(s) marked for creation")
+            declined_count = len(per_incident) - approved_count
+            st.caption(f"{approved_count} approved · {declined_count} declined")
 
-            submit_col, reject_col, _ = st.columns([1, 1, 4])
-            with submit_col:
-                submitted = st.form_submit_button(
-                    f"✅ Submit ({approved_count} approved)",
-                    type="primary",
-                )
-            with reject_col:
-                rejected_all = st.form_submit_button("❌ Reject All")
+            submitted = st.form_submit_button(
+                f"Submit Decisions",
+                type="primary",
+                use_container_width=True,
+            )
 
-        # Handle form submission outside the form block
         if submitted:
             if respond_to_incident_review(per_incident):
-                st.rerun()
-        elif rejected_all:
-            all_rejected = [{**d, "approved": False} for d in per_incident]
-            if respond_to_incident_review(all_rejected):
                 st.rerun()
 
     if incident_results:

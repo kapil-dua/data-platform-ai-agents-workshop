@@ -47,11 +47,12 @@ class DABContextLoader:
 
     def get_context(self, job_name: str) -> dict[str, Any]:
         """
-        Load context for a specific job or pipeline task from its DAB YAML.
+        Load context for a specific job from the DAB bundle file.
 
-        For multi-task pipelines, job_name may be "pipeline_name / task_key".
-        The loader first tries to find a DAB for the exact job name, then
-        falls back to finding the pipeline DAB and extracting the task config.
+        Supports both:
+        - Single bundle: .dab/databricks.yml  (all jobs in one file — DAB convention)
+        - Per-job dirs:  .dab/job_name/databricks.yml  (legacy)
+        - Pipeline task: "pipeline_name / task_key" format
 
         Args:
             job_name: Job name or "pipeline / task_key" format
@@ -59,16 +60,23 @@ class DABContextLoader:
         Returns:
             Dict with structured job context, or empty dict if not found.
         """
-        # Handle "pipeline_name / task_key" format from multi-task runs
-        pipeline_name = None
-        task_key      = None
+        task_key = None
         if " / " in job_name:
-            pipeline_name, task_key = job_name.split(" / ", 1)
+            _, task_key = job_name.split(" / ", 1)
 
-        # Try exact job name first
-        dab_file = self.dab_base / (pipeline_name or job_name) / "databricks.yml"
+        # Priority 1: single bundle file at .dab/databricks.yml
+        single_bundle = self.dab_base / "databricks.yml"
+        if single_bundle.exists():
+            try:
+                return self._parse_dab(single_bundle, job_name, task_key or job_name)
+            except Exception as e:
+                print(f"[DABContextLoader] Warning: could not parse {single_bundle}: {e}")
+
+        # Priority 2: per-job directory .dab/job_name/databricks.yml
+        job_dir_name = task_key or job_name
+        dab_file = self.dab_base / job_dir_name / "databricks.yml"
         if not dab_file.exists():
-            # Fallback: search all DAB dirs
+            # Search all subdirectories
             for d in self.dab_base.iterdir():
                 candidate = d / "databricks.yml"
                 if candidate.exists():
@@ -109,33 +117,29 @@ class DABContextLoader:
     def _extract_from_parsed(self, raw: dict, job_name: str, task_key: str | None = None) -> dict[str, Any]:
         """Extract structured context from parsed YAML dict.
 
-        For pipeline DABs with multiple tasks, task_key selects the specific
-        task configuration. Pipeline-level tags are always included.
+        Handles both single-job bundles and multi-job bundles (DAB convention).
+        For a multi-job bundle, finds the job by name or task_key.
         """
         jobs = raw.get("resources", {}).get("jobs", {})
-        # Find the job definition — try exact name, then first job in the bundle
-        job_def = jobs.get(job_name) or (list(jobs.values())[0] if jobs else {})
+
+        # Try to find the job by exact name, then by task_key, then first job
+        job_def = (
+            jobs.get(job_name)
+            or jobs.get(task_key)
+            or (list(jobs.values())[0] if jobs else {})
+        )
 
         tags     = job_def.get("tags", {})
         all_tasks = job_def.get("tasks", [])
         schedule = job_def.get("schedule", {})
 
-        # Find the specific task if task_key provided, else use first task
-        task_def = {}
-        if task_key and all_tasks:
-            task_def = next(
-                (t for t in all_tasks if t.get("task_key") == task_key),
-                all_tasks[0]
-            )
-        elif all_tasks:
-            task_def = all_tasks[0]
-
-        params = task_def.get("notebook_task", {}).get("base_parameters", {})
+        task_def = all_tasks[0] if all_tasks else {}
+        params   = task_def.get("notebook_task", {}).get("base_parameters", {})
         depends_on = [d.get("task_key") for d in task_def.get("depends_on", [])]
 
         return {
             "job_name":          job_name,
-            "task_key":          task_key or task_def.get("task_key", ""),
+            "task_key":          task_key or task_def.get("task_key", "main"),
             "description":       task_def.get("description", "") or job_def.get("description", ""),
             "layer":             tags.get("layer", "") or params.get("layer", ""),
             "upstream_system":   tags.get("upstream_system", "") or params.get("upstream_system", ""),
@@ -149,9 +153,9 @@ class DABContextLoader:
             "filename_pattern":  params.get("filename_pattern", ""),
             "archive_path":      params.get("archive_path", ""),
             "depends_on_tasks":  depends_on,
-            "pipeline_name":     list(jobs.keys())[0] if jobs else "",
+            "pipeline_name":     list(jobs.keys())[0] if len(jobs) == 1 else "",
             "pipeline_tags":     tags,
-            "total_tasks":       len(all_tasks),
+            "total_tasks":       len(jobs),
         }
 
     def _extract_from_text(self, content: str, job_name: str) -> dict[str, Any]:
@@ -202,12 +206,20 @@ class DABContextLoader:
         lines = []
 
         if context.get("pipeline_name"):
-            lines.append(f"Pipeline: {context['pipeline_name']} ({context.get('total_tasks', '?')} tasks total)")
-        lines.append(f"Failed task: {context.get('task_key', context.get('job_name', 'unknown'))}")
+            lines.append(f"Pipeline: {context['pipeline_name']} ({context.get('total_tasks', '?')} jobs total)")
+        lines.append(f"Failed job: {context.get('task_key', context.get('job_name', 'unknown'))}")
         lines.append(f"Description: {context.get('description', 'N/A')}")
         lines.append(f"Pipeline layer: {context.get('layer', 'N/A')}")
         lines.append(f"Upstream system: {context.get('upstream_system', 'N/A')}")
-        lines.append(f"Source table/path: {context.get('source_table') or context.get('source_path', 'N/A')}")
+
+        # Show primary source clearly — DBFS path takes priority over table reference
+        if context.get("source_path"):
+            lines.append(f"Source path (actual input): {context['source_path']}")
+            if context.get("source_table"):
+                lines.append(f"Source table (for UC lineage only): {context['source_table']}")
+        elif context.get("source_table"):
+            lines.append(f"Source table: {context['source_table']}")
+
         lines.append(f"Target table: {context.get('target_table', 'N/A')}")
         lines.append(f"Target schema: {context.get('target_schema', 'N/A')}")
         lines.append(f"SLA: {context.get('sla', 'N/A')}")

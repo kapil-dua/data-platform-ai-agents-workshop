@@ -27,33 +27,34 @@ _FALLBACK_SYSTEM = """You are an expert data engineer performing root cause anal
 
 You will be given:
 1. Job error logs and stack trace
-2. Job context from the DAB (Databricks Asset Bundle) — what the job is designed to do
+2. Job context from the DAB (Databricks Asset Bundle) — documentation of what the job is designed to do
 3. Unity Catalog lineage — what tables the job reads/writes and who depends on its output
 
-CRITICAL RULE: Every path, table name, filename, system name, timestamp, and config value
-you mention in your response MUST be copied exactly from the context provided above.
-Never say "check the landing zone" — say "check abfss://raw@datalake.dfs.core.windows.net/inventory/daily/".
-Never say "the upstream system" — say "the WMS (Warehouse Management System)".
-Never say "the expected file" — say "inventory_2026-10-07.csv".
-If a value is in the context, use it. If it is not in the context, say it is unknown.
+CRITICAL RULES:
+- Every path, table name, filename, system name and config value you mention MUST come from the context or error logs. Do not invent values.
+- DAB parameters (source_path, filename_pattern, etc.) are DOCUMENTATION only — they describe what the job does. Do NOT suggest changing DAB parameters unless the error proves a parameter is misconfigured.
+- If a filename pattern is wrong in the CODE, the fix is to update the code regex, not the DAB documentation.
+- If a file is missing, the fix is to deliver the correct file, not to change the expected pattern.
+- The RECOMMENDED FIX must address ONLY the specific failure shown in the error. Maximum 4 steps.
+- Do not add unrelated configuration or DAB update suggestions.
 
 Your analysis must include:
 
-1. ROOT CAUSE — specific explanation referencing the exact error, the job's design intent,
-   and the mismatch between what was expected and what was found.
-   Quote exact values from the DAB context and error logs.
+1. ROOT CAUSE — one clear sentence: what failed and exactly why, using values from the error.
 
-2. DOWNSTREAM IMPACT — which exact downstream tables or consumers will be affected.
-   Reference exact table names and job names from the UC lineage data.
+2. DOWNSTREAM IMPACT — exact downstream tables or jobs affected (from UC lineage). If none, say "No downstream impact identified."
 
-3. RECOMMENDED FIX — numbered, specific steps with exact paths, commands, and contact points.
-   Example of good step: "Check SFTP landing zone /inbound/inventory/daily/ for inventory_2026-10-07.csv"
-   Example of bad step:  "Check the SFTP landing zone for today's file"
+3. RECOMMENDED FIX — numbered steps addressing ONLY the actual error.
+   Each step: WHAT to do + WHERE exactly (exact path/table/system from context) + HOW to access.
+   For missing files: the fix is to deliver the correct file to the expected path, not update patterns.
+   For schema mismatches in conformed jobs: the fix is to update the transform code to handle new columns.
+   For filename format changes (upstream changed their format): the fix is to ask the upstream team
+   to revert to the original format, OR to rename/reformat the file to match what the code expects.
+   Do NOT suggest changing the code's expected pattern — the pattern reflects the data contract.
 
-4. SEVERITY — Critical / High / Medium / Low with a one-line justification referencing
-   the number of downstream consumers affected.
+4. SEVERITY — Critical / High / Medium / Low with one-line justification.
 
-Be concise but specific. Every actionable step must include exact values."""
+Be specific and grounded in the context only. Do not speculate."""
 
 _FALLBACK_USER = """\
 Job Name: {job_name}
@@ -165,14 +166,16 @@ class RCAAgent:
                 rca = self._perform_rca(job, logs, dab_text, uc_text)
 
                 rca_results.append({
-                    "job_name":        job_name,
-                    "run_id":          run_id,
-                    "error_message":   job.get("error_message", "N/A"),
-                    "root_cause":      rca["root_cause"],
-                    "recommendations": rca["recommendations"],
-                    "severity":        rca["severity"],
-                    "dab_context":     dab_ctx,
-                    "uc_lineage":      uc_ctx,
+                    "job_name":          job_name,
+                    "run_id":            run_id,
+                    "error_message":     job.get("error_message", "N/A"),
+                    "root_cause":        rca["root_cause"],
+                    "downstream_impact": rca.get("downstream_impact", ""),
+                    "recommendations":   rca["recommendations"],
+                    "severity":          rca["severity"],
+                    "_full_response":    rca.get("_full_response", rca["root_cause"]),
+                    "dab_context":       dab_ctx,
+                    "uc_lineage":        uc_ctx,
                     # Evaluator metadata — populated by rca_evaluator node
                     "eval_score":            None,
                     "eval_iterations":       1,
@@ -226,22 +229,99 @@ class RCAAgent:
         response = self._chain.invoke(variables)
         llm_response = response.content if hasattr(response, "content") else str(response)
 
+        # Parse structured sections from LLM response
+        sections = self._parse_sections(llm_response)
+
         return {
-            "root_cause":      llm_response,
-            "recommendations": self._extract_recommendations(llm_response),
+            "root_cause":      sections.get("root_cause", llm_response),
+            "downstream_impact": sections.get("downstream_impact", ""),
+            "recommendations": sections.get("recommendations", []),
             "severity":        self._determine_severity(job_info, llm_response),
+            "_full_response":  llm_response,
         }
 
+    def _parse_sections(self, llm_response: str) -> dict:
+        """Parse structured LLM response into named sections.
+
+        Handles various header formats:
+          1. ROOT CAUSE:  /  **ROOT CAUSE**  /  ROOT CAUSE —  /  ROOT CAUSE
+        """
+        import re
+        result = {"root_cause": "", "downstream_impact": "", "recommendations": [], "severity_text": ""}
+
+        # Flexible pattern: optional number, optional bold, section name, optional punctuation
+        section_pattern = re.compile(
+            r'(?:^|\n)\s*'
+            r'(?:\d+[\.\)]\s*)?'       # optional number like "1." or "1)"
+            r'(?:\*{1,2})?'            # optional markdown bold start
+            r'(ROOT\s*CAUSE|DOWNSTREAM\s*IMPACT|RECOMMENDED?\s*FIXES?|SEVERITY)'
+            r'(?:\*{1,2})?'            # optional markdown bold end
+            r'\s*[:\-—]?\s*',
+            re.IGNORECASE | re.MULTILINE
+        )
+
+        parts = section_pattern.split(llm_response)
+
+        if len(parts) <= 1:
+            # No section headers found — put everything in root_cause, no separate recommendations
+            result["root_cause"] = llm_response.strip()
+            return result
+
+        # parts = [pre_text, header, content, header, content, ...]
+        for i in range(1, len(parts), 2):
+            header  = parts[i].upper().strip().replace(" ", "_") if i < len(parts) else ""
+            content = parts[i + 1].strip() if i + 1 < len(parts) else ""
+
+            if "ROOT" in header and "CAUSE" in header:
+                result["root_cause"] = content
+            elif "DOWNSTREAM" in header or "IMPACT" in header:
+                result["downstream_impact"] = content
+            elif "FIX" in header or "RECOMMEND" in header:
+                steps = []
+                seen  = set()
+                for line in content.split("\n"):
+                    s = line.strip()
+                    # Skip empty lines, pure headers, section titles
+                    if not s or s.upper() in ("RECOMMENDED FIX", "RECOMMENDED FIXES", "FIX"):
+                        continue
+                    # Skip lines that are just punctuation or very short
+                    if len(s) < 5:
+                        continue
+                    key = re.sub(r'^\d+[\.\)]\s*', '', s).lower()[:80]
+                    if key not in seen:
+                        seen.add(key)
+                        steps.append(s)
+                result["recommendations"] = steps[:6]
+            elif "SEVERITY" in header:
+                result["severity_text"] = content
+
+        # Fallback: if root_cause still empty, use preamble text
+        if not result["root_cause"] and parts[0].strip():
+            result["root_cause"] = parts[0].strip()
+
+        # If still no root_cause, use full response (no separate recommendations)
+        if not result["root_cause"]:
+            result["root_cause"] = llm_response.strip()
+            result["recommendations"] = []
+
+        return result
+
     def _extract_recommendations(self, llm_response: str) -> list:
-        """Extract recommendation lines from LLM response."""
+        """Extract recommendation lines from LLM response, deduplicated."""
+        seen = set()
         recommendations = []
         for line in llm_response.split("\n"):
             stripped = line.strip()
-            if stripped and any(
-                kw in stripped.lower()
-                for kw in ["recommend", "should", "fix", "resolve", "check", "update", "contact"]
-            ):
-                recommendations.append(stripped)
+            if not stripped:
+                continue
+            # Match lines that look like actionable steps
+            if any(kw in stripped.lower() for kw in
+                   ["recommend", "should", "fix", "resolve", "check", "update", "contact", "verify"]):
+                # Deduplicate by normalised lowercase
+                key = stripped.lower()[:80]
+                if key not in seen:
+                    seen.add(key)
+                    recommendations.append(stripped)
         return recommendations[:5] if recommendations else ["Review logs and DAB config for specific details"]
 
     def _determine_severity(self, job_info: dict, llm_response: str) -> str:

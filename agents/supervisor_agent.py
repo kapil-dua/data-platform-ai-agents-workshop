@@ -87,8 +87,10 @@ class SupervisorState(TypedDict):
 
 
 # ── ReAct supervisor system prompt ────────────────────────────────────────────
+# Loaded from Langfuse Prompt Management at runtime (prompt name: supervisor-react-routing).
+# Falls back to this hardcoded version if Langfuse is unavailable.
 
-_REACT_SYSTEM = """You are a data-platform triage supervisor deciding which agent to invoke next.
+_REACT_SYSTEM_FALLBACK = """You are a data-platform triage supervisor deciding which agent to invoke next.
 
 Based on the current workflow state, decide the next step by responding with EXACTLY one of these words:
   monitor   — if jobs have not been checked yet
@@ -123,6 +125,15 @@ class SupervisorAgent:
         self.rca_subgraph    = build_rca_subgraph(self.rca_agent, self.evaluator_agent, self.uc_fetcher)
         self._last_fan_out_degree = 0
         self._last_execution_log  = []
+
+        # Load ReAct routing prompt from Langfuse (falls back to hardcoded if unavailable)
+        from utils.langfuse_tracing import get_prompt_and_template
+        _, self._react_prompt_template = get_prompt_and_template(
+            name="supervisor-react-routing",
+            prompt_type="text",
+            fallback_template=_REACT_SYSTEM_FALLBACK,
+        )
+        self._react_system_prompt = None  # loaded lazily from template
         self.checkpointer    = self._build_checkpointer()
         self.workflow        = self._build_workflow()
         print(self.workflow.get_graph().draw_mermaid())
@@ -210,7 +221,7 @@ class SupervisorAgent:
         )
 
         messages = [
-            SystemMessage(content=_REACT_SYSTEM.format(task=task)),
+            SystemMessage(content=self._react_prompt_template.format(task=task)),
             HumanMessage(content=context + "\nWhat should be done next?"),
         ]
 
@@ -306,7 +317,12 @@ class SupervisorAgent:
         best   = sg_output.get("best_result") or sg_output.get("rca_result", {})
         score  = best.get("eval_score", 0.0) or 0.0
         passed = best.get("eval_passed", False)
-        iters  = best.get("eval_iterations", 1)
+        # Total iterations run = current iteration counter - 1 (since it's pre-incremented)
+        total_iters = max(1, sg_output.get("iteration", 2) - 1)
+        # Update best_result with total iteration count for UI display
+        if best:
+            best = {**best, "eval_iterations": total_iters}
+        iters = total_iters
 
         print(
             f"[RCA Subgraph] {job_name} complete — "
@@ -508,7 +524,6 @@ class SupervisorAgent:
         """Reconstruct visited nodes from execution_log for graph highlighting."""
         log  = state.get("execution_log", [])
         path = ["supervisor"]
-        # Only add nodes that were actually visited — check log markers
         node_markers = {
             "monitor":       "Monitor Agent completed",
             "rca_fan_out":   "fanning out RCA",
@@ -520,7 +535,9 @@ class SupervisorAgent:
             for node, marker in node_markers.items():
                 if marker in entry and node not in path:
                     path.append(node)
-        # rca node is hidden in diagram but drives rca_fan_out highlight — skip it
+                    # rca_subgraph includes evaluation — also mark evaluator visited
+                    if node == "rca_subgraph" and "rca_evaluator" not in path:
+                        path.append("rca_evaluator")
         return path
 
     def _workflow_graph_dot(self, workflow_path: list[str]) -> str:
@@ -537,9 +554,10 @@ class SupervisorAgent:
         # Fan-out degree from state (stored by _rca_fan_out_node)
         fan_out_degree = self._last_fan_out_degree
 
-        hidden_nodes = set()  # rca_subgraph is now a real visible node
+        hidden_nodes = {"rca_subgraph"}  # hide internal subgraph — show fan_out → evaluator directly
         skip_edges = {
-            ("rca_fan_out",  "rca_subgraph"),  # replaced by injected edge with fan-out label
+            ("rca_fan_out",  "rca_subgraph"),   # replaced by injected direct edge
+            ("rca_subgraph", "rca_evaluator"),  # replaced by injected direct edge
             ("rca_evaluator", "rca"),           # old retry edge no longer in graph
         }
 
@@ -547,17 +565,18 @@ class SupervisorAgent:
         incident_visited = "incident" in visited_nodes
         fan_label        = f"x{fan_out_degree} parallel" if fan_out_degree else "xN parallel"
         injected_edges = [
-            ("rca_fan_out",   "rca_subgraph",  fan_label, False, rca_visited),
-            ("rca_subgraph",  "rca_evaluator", "",       False, rca_visited),
-            ("rca_evaluator", "incident",      "",       True,  incident_visited),
+            # rca_fan_out → rca_evaluator directly (rca_subgraph hidden)
+            ("rca_fan_out",   "rca_evaluator", fan_label, False, rca_visited),
+            # rca_evaluator → incident (dashed conditional)
+            ("rca_evaluator", "incident",      "",        True,  incident_visited),
         ]
 
         lines = [
             "digraph workflow {",
             "  rankdir=TB;",
-            '  graph [nodesep=0.12, ranksep=0.2, margin=0.04, pad=0.05];',
-            '  node [shape=box, style="rounded,filled", fillcolor="#eef4f3", color="#57736d", fontname="sans-serif", fontsize=9, margin="0.08,0.04"];',
-            '  edge [color="#71817d", fontname="sans-serif", fontsize=8, arrowsize=0.7];',
+            '  graph [nodesep=0.08, ranksep=0.15, margin=0.02, pad=0.03, size="4,8"];',
+            '  node [shape=box, style="rounded,filled", fillcolor="#eef4f3", color="#57736d", fontname="sans-serif", fontsize=8, margin="0.06,0.03", height=0.3];',
+            '  edge [color="#71817d", fontname="sans-serif", fontsize=7, arrowsize=0.6];',
         ]
 
         for node_id, node in graph.nodes.items():
@@ -741,6 +760,14 @@ class SupervisorAgent:
                             accumulated[k] = accumulated.get(k, []) + v
                         else:
                             accumulated[k] = v
+
+                    # Generate graph after every node so UI can render it live
+                    try:
+                        workflow_path = self._workflow_path(accumulated)
+                        self._last_execution_log = accumulated.get("execution_log", [])
+                        accumulated["workflow_graph"] = self._workflow_graph_dot(workflow_path)
+                    except Exception:
+                        pass
 
                     yield {"node": node_name, "state": dict(accumulated)}
 

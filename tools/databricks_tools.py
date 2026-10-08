@@ -87,8 +87,33 @@ class DatabricksJobsClient:
 
             task_runs = getattr(latest_run, "tasks", None) or []
 
-            if not task_runs:
-                # Single-task job — original behaviour
+            # Count distinct task keys (not all run objects — a single task can have multiple run objects)
+            distinct_task_keys = {getattr(t, "task_key", None) for t in task_runs if getattr(t, "task_key", None)}
+            is_multi_task = len(distinct_task_keys) > 1
+
+            if not task_runs or not is_multi_task:
+                # Single-task job — use job-level entry directly (no task suffix)
+                state_msg = latest_run.state.state_message or ""
+                # Fetch actual error from run output if state_message is generic
+                actual_error = state_msg
+                if self._normalize_status(latest_run) == "FAILED" and (
+                    not state_msg or "check run details" in state_msg.lower()
+                ):
+                    try:
+                        task_run_id = task_runs[0].run_id if task_runs else latest_run.run_id
+                        output = self.workspace_client.jobs.get_run_output(task_run_id)
+                        raw_err = (
+                            output.error
+                            or output.error_trace
+                            or (output.notebook_output.result if output.notebook_output else "")
+                            or state_msg
+                        )
+                        if raw_err:
+                            first_line = [l.strip() for l in raw_err.split("\n") if l.strip()]
+                            actual_error = first_line[0] if first_line else raw_err
+                    except Exception:
+                        pass
+
                 jobs_status.append({
                     "job_name":      pipeline_name,
                     "job_id":        job_id,
@@ -101,12 +126,12 @@ class DatabricksJobsClient:
                         (end_time - start_time) / 1000
                         if start_time and end_time else None
                     ),
-                    "error_message": latest_run.state.state_message or "",
+                    "error_message": actual_error,
                     "run_page_url":  latest_run.run_page_url or "",
                     "is_pipeline":   False,
                 })
             else:
-                # Multi-task pipeline — surface each task individually
+                # Genuine multi-task pipeline — surface each task individually
                 overall_status = self._normalize_status(latest_run)
 
                 # Always add one entry for the overall pipeline status
@@ -154,6 +179,26 @@ class DatabricksJobsClient:
                         if t_state else ""
                     )
 
+                    # Try to get the actual error from run output
+                    # state_message often just says "check run details"
+                    task_run_id = getattr(task, "run_id", None)
+                    actual_error = t_error
+                    if task_run_id and (not t_error or "check run details" in t_error.lower()):
+                        try:
+                            output = self.workspace_client.jobs.get_run_output(task_run_id)
+                            actual_error = (
+                                output.error
+                                or output.error_trace
+                                or (output.notebook_output.result if output.notebook_output else "")
+                                or t_error
+                            )
+                            # Trim to first meaningful line for the summary
+                            if actual_error:
+                                first_line = [l.strip() for l in actual_error.split("\n") if l.strip()]
+                                actual_error = first_line[0] if first_line else actual_error
+                        except Exception:
+                            pass
+
                     jobs_status.append({
                         "job_name":      f"{pipeline_name} / {task_key}",
                         "job_id":        job_id,
@@ -167,7 +212,7 @@ class DatabricksJobsClient:
                             (t_end - t_start) / 1000
                             if t_start and t_end else None
                         ),
-                        "error_message": t_error,
+                        "error_message": actual_error,
                         "run_page_url":  getattr(task, "run_page_url", ""),
                         "is_pipeline":   True,
                         "is_task":       True,

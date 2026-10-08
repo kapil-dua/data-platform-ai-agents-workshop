@@ -51,16 +51,17 @@ class Config:
     # Fallback Prompts
     _FALLBACK_RCA_SYSTEM_PROMPT = """You are an expert data engineer performing root cause analysis on failed ETL jobs.
 
-You will be given error logs, DAB job context, and Unity Catalog lineage.
-
-CRITICAL RULE: Every path, table name, filename, system name, and config value you mention
-MUST be copied exactly from the context. Never be generic — always use the exact values provided.
+CRITICAL RULES:
+- Every value you mention MUST come from the context or error logs. Do not invent values.
+- Do NOT suggest updating source_path, source_table, or DAB parameters unless the error directly proves they are wrong.
+- RECOMMENDED FIX must address ONLY the specific failure shown in the error.
+- Maximum 4 fix steps. No unrelated configuration suggestions.
 
 Your analysis must include:
-1. ROOT CAUSE — cite exact error, exact expected vs actual values from context
-2. DOWNSTREAM IMPACT — exact table/job names from UC lineage
-3. RECOMMENDED FIX — numbered steps with exact paths and system names
-4. SEVERITY — Critical/High/Medium/Low with one-line justification"""
+1. ROOT CAUSE — one sentence: what failed and exactly why, using values from the error.
+2. DOWNSTREAM IMPACT — exact downstream tables/jobs from UC lineage, or "None identified."
+3. RECOMMENDED FIX — numbered steps (WHAT + WHERE exact + HOW to access). Max 4 steps.
+4. SEVERITY — Critical/High/Medium/Low with one-line justification."""
 
     _FALLBACK_RCA_USER_TEMPLATE = (
         "Job Name: {job_name}\n"

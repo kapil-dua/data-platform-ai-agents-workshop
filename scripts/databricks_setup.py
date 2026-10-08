@@ -26,7 +26,7 @@ import os
 import sys
 import time
 import textwrap
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -50,58 +50,64 @@ SCHEMA_CF     = "conformed"
 NOTEBOOK_BASE = "/Shared/demo_etl"
 DAB_BASE      = Path(__file__).resolve().parent.parent / ".dab"
 
-TODAY      = datetime.utcnow().strftime("%Y-%m-%d")
-YESTERDAY  = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+# UC Volume path — modern replacement for DBFS, works even when DBFS root is disabled
+VOLUME_PATH = f"/Volumes/{CATALOG}/{SCHEMA_RAW}/landing"
+
+TODAY      = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+YESTERDAY  = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
 
 # ── Job definitions ───────────────────────────────────────────────────────────
 
 JOBS = [
-    # ── 1. SUCCEEDS — raw → cleansed customers ────────────────────────────
+    # ── 1. FAILS — raw → cleansed customers (file not found) ──────────────
     {
         "name":        "etl_raw_to_cleansed_customers",
         "notebook":    "etl_raw_to_cleansed_customers",
-        "should_fail": False,
+        "should_fail": True,
         "layer":       "raw_to_cleansed",
-        "upstream_system": "CRM export (nightly)",
+        "upstream_system": "CRM system nightly batch export (02:00 UTC)",
+        "source_path":     f"/Volumes/{CATALOG}/{SCHEMA_RAW}/landing/customers/daily/",
         "source_table":    f"{CATALOG}.{SCHEMA_RAW}.customers_raw",
         "target_table":    f"{CATALOG}.{SCHEMA_CL}.customers",
         "target_schema":   f"{CATALOG}.{SCHEMA_CL}",
+        "filename_pattern":"customers_YYYY-MM-DD.csv",
         "sla":             "03:00 UTC",
-        "description":     "Reads raw customer records, validates schema, deduplicates, writes to cleansed layer.",
+        "description":     "Reads daily CRM customer export CSV from UC Volume. Fails if today's file not yet delivered.",
         "parameters": {
+            "source_path":     f"/Volumes/{CATALOG}/{SCHEMA_RAW}/landing/customers/daily/",
             "source_table":    f"{CATALOG}.{SCHEMA_RAW}.customers_raw",
             "target_table":    f"{CATALOG}.{SCHEMA_CL}.customers",
-            "primary_key":     "customer_id",
-            "partition_col":   "load_date",
+            "filename_pattern":"customers_YYYY-MM-DD.csv",
+            "FORCE_SUCCESS":   "false",
         },
     },
-    # ── 2. FAILS — raw → cleansed inventory (file not found) ─────────────
+    # ── 2. SUCCEEDS — raw → cleansed inventory ────────────────────────────
     {
         "name":        "etl_raw_to_cleansed_inventory",
         "notebook":    "etl_raw_to_cleansed_inventory",
-        "should_fail": True,
+        "should_fail": False,
         "layer":       "raw_to_cleansed",
         "upstream_system": "Warehouse Management System (WMS) — SFTP drop at 01:00 UTC",
-        "source_path":     f"abfss://{SCHEMA_RAW}@datalake.dfs.core.windows.net/inventory/daily/inventory_YYYY-MM-DD.csv",
-        "source_table":    f"{CATALOG}.{SCHEMA_RAW}.inventory_raw",
+        "source_path":     f"/Volumes/{CATALOG}/{SCHEMA_RAW}/landing/inventory/daily/",
+        "source_table":    f"{CATALOG}.{SCHEMA_RAW}.inventory_raw",  # UC lineage registration table
         "target_table":    f"{CATALOG}.{SCHEMA_CL}.inventory_daily",
         "target_schema":   f"{CATALOG}.{SCHEMA_CL}",
-        "archive_path":    f"abfss://{SCHEMA_RAW}@datalake.dfs.core.windows.net/inventory/archive/",
+        "archive_path":    f"/Volumes/{CATALOG}/{SCHEMA_RAW}/landing/inventory/archive/",
         "filename_pattern":"inventory_YYYY-MM-DD.csv",
         "sla":             "02:00 UTC",
-        "description":     "Reads daily inventory CSV from ADLS, validates and writes to cleansed.inventory_daily.",
+        "description":     "Reads daily inventory CSV from DBFS, validates and writes to cleansed.inventory_daily.",
         "parameters": {
-            "source_path":     f"abfss://{SCHEMA_RAW}@datalake.dfs.core.windows.net/inventory/daily/",
+            "source_path":     f"/Volumes/{CATALOG}/{SCHEMA_RAW}/landing/inventory/daily/",
             "target_table":    f"{CATALOG}.{SCHEMA_CL}.inventory_daily",
             "filename_pattern":"inventory_YYYY-MM-DD.csv",
-            "archive_path":    f"abfss://{SCHEMA_RAW}@datalake.dfs.core.windows.net/inventory/archive/",
+            "archive_path":    f"/Volumes/{CATALOG}/{SCHEMA_RAW}/landing/inventory/archive/",
         },
     },
-    # ── 3. FAILS — raw → cleansed sales (schema typo) ────────────────────
+    # ── 3. SUCCEEDS — raw → cleansed sales ───────────────────────────────
     {
         "name":        "etl_raw_to_cleansed_sales",
         "notebook":    "etl_raw_to_cleansed_sales",
-        "should_fail": True,
+        "should_fail": False,
         "layer":       "raw_to_cleansed",
         "upstream_system": "POS system (real-time CDC via Kafka → Delta)",
         "source_table":    f"{CATALOG}.{SCHEMA_RAW}.sales_raw",
@@ -111,47 +117,47 @@ JOBS = [
         "description":     "Reads raw sales transactions, applies business rules, writes to cleansed.sales_transactions.",
         "parameters": {
             "source_table":  f"{CATALOG}.{SCHEMA_RAW}.sales_raw",
-            "target_schema": f"{CATALOG}.confromed_sales",   # intentional typo
-            "target_table":  f"{CATALOG}.confromed_sales.sales_transactions",
+            "target_table":  f"{CATALOG}.{SCHEMA_CL}.sales_transactions",
+            "target_schema": f"{CATALOG}.{SCHEMA_CL}",
         },
     },
-    # ── 4. FAILS — cleansed → conformed revenue (filename format) ─────────
+    # ── 4. FAILS — cleansed → conformed revenue (schema mismatch) ────────
     {
         "name":        "etl_cleansed_to_conformed_revenue",
         "notebook":    "etl_cleansed_to_conformed_revenue",
         "should_fail": True,
         "layer":       "cleansed_to_conformed",
-        "upstream_system": "Finance system revenue export (daily batch)",
+        "upstream_system": "Finance system revenue export (cleansed by etl_raw_to_cleansed_sales)",
         "source_table":    f"{CATALOG}.{SCHEMA_CL}.revenue_export",
         "target_table":    f"{CATALOG}.{SCHEMA_CF}.fact_revenue_daily",
         "target_schema":   f"{CATALOG}.{SCHEMA_CF}",
-        "source_path":     f"abfss://{SCHEMA_RAW}@datalake.dfs.core.windows.net/finance/revenue/",
-        "filename_pattern":"revenue_export_YYYY-MM-DD.csv",
         "sla":             "05:00 UTC",
-        "description":     "Reads cleansed revenue export, aggregates by region/product, writes to conformed.fact_revenue_daily.",
+        "description":     "Aggregates cleansed revenue by region/product into conformed fact table. Fails when cleansed schema has unexpected columns.",
         "parameters": {
-            "source_path":     f"abfss://{SCHEMA_RAW}@datalake.dfs.core.windows.net/finance/revenue/",
-            "source_table":    f"{CATALOG}.{SCHEMA_CL}.revenue_export",
-            "target_table":    f"{CATALOG}.{SCHEMA_CF}.fact_revenue_daily",
-            "filename_pattern":"revenue_export_YYYY-MM-DD.csv",
+            "source_table":     f"{CATALOG}.{SCHEMA_CL}.revenue_export",
+            "target_table":     f"{CATALOG}.{SCHEMA_CF}.fact_revenue_daily",
+            "expected_schema":  "revenue_id,region,product_line,gross_revenue,net_revenue,export_date",
+            "FORCE_SUCCESS":    "false",
         },
     },
-    # ── 5. SUCCEEDS — cleansed → conformed inventory ─────────────────────
+    # ── 5. FAILS — cleansed → conformed inventory (data quality) ─────────
     {
         "name":        "etl_cleansed_to_conformed_inventory",
         "notebook":    "etl_cleansed_to_conformed_inventory",
-        "should_fail": False,
+        "should_fail": True,
         "layer":       "cleansed_to_conformed",
-        "upstream_system": "cleansed.inventory_daily (internal)",
+        "upstream_system": "cleansed.inventory_daily (written by etl_raw_to_cleansed_inventory)",
         "source_table":    f"{CATALOG}.{SCHEMA_CL}.inventory_daily",
         "target_table":    f"{CATALOG}.{SCHEMA_CF}.fact_inventory_summary",
         "target_schema":   f"{CATALOG}.{SCHEMA_CF}",
         "sla":             "06:00 UTC",
-        "description":     "Aggregates cleansed inventory data into daily summary fact table.",
+        "description":     "Aggregates cleansed inventory by warehouse and date. Enforces warehouse_id not null as grain key for conformed fact table.",
         "parameters": {
-            "source_table": f"{CATALOG}.{SCHEMA_CL}.inventory_daily",
-            "target_table": f"{CATALOG}.{SCHEMA_CF}.fact_inventory_summary",
-            "aggregation":  "daily_by_warehouse",
+            "source_table":  f"{CATALOG}.{SCHEMA_CL}.inventory_daily",
+            "target_table":  f"{CATALOG}.{SCHEMA_CF}.fact_inventory_summary",
+            "required_key":  "warehouse_id",
+            "aggregation":   "daily_by_warehouse",
+            "FORCE_SUCCESS": "false",
         },
     },
 ]
@@ -159,53 +165,64 @@ JOBS = [
 
 # ── Notebook code ─────────────────────────────────────────────────────────────
 
+
 def _nb_raw_to_cleansed_customers() -> str:
     return textwrap.dedent(f"""\
 # Databricks notebook source
 # MAGIC %md
-# MAGIC ## ETL: Raw → Cleansed Customers
-# MAGIC Reads raw customer records, validates schema, deduplicates, writes to cleansed layer.
+# MAGIC ## ETL: Raw -> Cleansed Customers
+# MAGIC Reads CRM daily export CSV from UC Volume landing zone.
+# MAGIC Expected: /Volumes/{CATALOG}/{SCHEMA_RAW}/landing/customers/daily/customers_YYYY-MM-DD.csv
+# MAGIC Today's file is absent (CRM delivery delayed) so this job FAILS.
+# MAGIC Set FORCE_SUCCESS=true to bypass.
 
 # COMMAND ----------
 
-import datetime
+dbutils.widgets.text("FORCE_SUCCESS", "false", "Force Success")
+FORCE_SUCCESS = dbutils.widgets.get("FORCE_SUCCESS").lower() == "true"
+
+from datetime import datetime, timedelta, timezone
 from pyspark.sql import functions as F
 
-params = {{
-    "source_table": "{CATALOG}.{SCHEMA_RAW}.customers_raw",
-    "target_table": "{CATALOG}.{SCHEMA_CL}.customers",
-    "primary_key":  "customer_id",
-}}
+today         = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+yesterday_str = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+VOLUME_PATH   = "/Volumes/{CATALOG}/{SCHEMA_RAW}/landing/customers/daily"
+SOURCE_TABLE  = "{CATALOG}.{SCHEMA_RAW}.customers_raw"
+TARGET_TABLE  = "{CATALOG}.{SCHEMA_CL}.customers"
+TODAY_FILE    = f"{{VOLUME_PATH}}/customers_{{today}}.csv"
 
-print(f"[{{datetime.datetime.utcnow()}}] Starting: raw → cleansed customers")
-print(f"Source: {{params['source_table']}}")
-print(f"Target: {{params['target_table']}}")
+print(f"Expected: {{TODAY_FILE}}")
+print(f"FORCE_SUCCESS: {{FORCE_SUCCESS}}")
 
-# COMMAND ----------
+df_raw = spark.table(SOURCE_TABLE)
+print(f"Raw table: {{df_raw.count():,}} records")
 
-df = spark.table(params["source_table"])
-print(f"Records read from raw: {{df.count():,}}")
+try:
+    df_incoming = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load(TODAY_FILE)
+    incoming_count = df_incoming.count()
+    print(f"Today file found: {{incoming_count}} records")
+except Exception:
+    df_incoming = None
+    incoming_count = 0
+    print(f"Today file NOT found: {{TODAY_FILE}}")
+    print(f"Last delivery: {{VOLUME_PATH}}/customers_{{yesterday_str}}.csv")
 
-# Validate schema
-assert "customer_id" in df.columns, "Missing required column: customer_id"
-assert "email" in df.columns, "Missing required column: email"
+if not FORCE_SUCCESS and incoming_count == 0:
+    raise FileNotFoundError(
+        f"FileNotFoundError: CRM export not found for {{today}} at {{TODAY_FILE}}. "
+        f"Last delivery: {{VOLUME_PATH}}/customers_{{yesterday_str}}.csv. "
+        f"Possible causes: CRM nightly batch delayed, SFTP transfer failed, file not generated. "
+        f"Aborting to avoid stale data in {{TARGET_TABLE}}."
+    )
 
-# Deduplication
-df_clean = df.dropDuplicates(["customer_id"]) \\
-             .filter(F.col("customer_id").isNotNull()) \\
-             .withColumn("load_date", F.current_date()) \\
-             .withColumn("_ingested_at", F.current_timestamp())
+df_clean = df_incoming \\
+    .filter(F.col("customer_id").isNotNull()) \\
+    .dropDuplicates(["customer_id"]) \\
+    .withColumn("load_date", F.current_date()) \\
+    .withColumn("_ingested_at", F.current_timestamp())
 
-print(f"Records after dedup/validation: {{df_clean.count():,}}")
-
-# COMMAND ----------
-
-df_clean.write.format("delta") \\
-    .mode("overwrite") \\
-    .option("overwriteSchema", "true") \\
-    .saveAsTable(params["target_table"])
-
-print(f"[{{datetime.datetime.utcnow()}}] Completed successfully. Written to {{params['target_table']}}")
+df_clean.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(TARGET_TABLE)
+print(f"Completed. Written to {{TARGET_TABLE}}")
 """)
 
 
@@ -213,54 +230,41 @@ def _nb_raw_to_cleansed_inventory() -> str:
     return textwrap.dedent(f"""\
 # Databricks notebook source
 # MAGIC %md
-# MAGIC ## ETL: Raw → Cleansed Inventory
-# MAGIC Reads daily inventory CSV from ADLS, validates and writes to cleansed.inventory_daily.
+# MAGIC ## ETL: Raw -> Cleansed Inventory
+# MAGIC Reads yesterday's inventory CSV from UC Volume (today's not yet arrived from WMS).
+# MAGIC This job SUCCEEDS using yesterday's delivery.
 
 # COMMAND ----------
 
-import datetime
+from datetime import datetime, timedelta, timezone
 from pyspark.sql import functions as F
 
-today        = datetime.datetime.utcnow().strftime("%Y-%m-%d")
-SOURCE_PATH  = "abfss://{SCHEMA_RAW}@datalake.dfs.core.windows.net/inventory/daily/"
-TARGET_TABLE = "{CATALOG}.{SCHEMA_CL}.inventory_daily"
+yesterday_str = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+VOLUME_PATH   = "/Volumes/{CATALOG}/{SCHEMA_RAW}/landing/inventory/daily"
+SOURCE_TABLE  = "{CATALOG}.{SCHEMA_RAW}.inventory_raw"
+TARGET_TABLE  = "{CATALOG}.{SCHEMA_CL}.inventory_daily"
 
-print(f"[{{datetime.datetime.utcnow()}}] Starting: raw → cleansed inventory")
-print(f"Partition date : {{today}}")
-print(f"Source path    : {{SOURCE_PATH}}")
-print(f"Target table   : {{TARGET_TABLE}}")
+print(f"Reading: {{VOLUME_PATH}}/inventory_{{yesterday_str}}.csv")
+print(f"Target : {{TARGET_TABLE}}")
 
-# COMMAND ----------
+df_raw = spark.table(SOURCE_TABLE)
+print(f"Raw table: {{df_raw.count():,}} records (for UC lineage)")
 
-# Register UC lineage — read raw table before attempting file ingest
-df_raw = spark.table("{CATALOG}.{SCHEMA_RAW}.inventory_raw")
-print(f"Raw table records available: {{df_raw.count():,}}")
-
-# COMMAND ----------
-
-# Attempt to read today's incoming file
 try:
-    df_incoming = spark.read.format("csv") \\
-        .option("header", "true") \\
-        .option("inferSchema", "true") \\
-        .load(SOURCE_PATH)
-    incoming_count = df_incoming.filter(F.col("load_date") == today).count()
+    df = spark.read.format("csv").option("header", "true").option("inferSchema", "true") \\
+        .load(f"{{VOLUME_PATH}}/inventory_{{yesterday_str}}.csv")
+    print(f"File found: {{df.count():,}} records")
 except Exception as e:
-    incoming_count = 0
-    print(f"Warning: could not read source path — {{e}}")
+    print(f"Volume file not found, reading from raw table: {{e}}")
+    df = df_raw
 
-print(f"Incoming records for {{today}}: {{incoming_count}}")
+df_clean = df \\
+    .filter(F.col("inventory_id").isNotNull()) \\
+    .withColumn("load_date", F.lit(yesterday_str).cast("date")) \\
+    .withColumn("_ingested_at", F.current_timestamp())
 
-# COMMAND ----------
-
-# Validate: no data to process — raise premature exit
-if incoming_count == 0:
-    raise ValueError(
-        f"PrematureExit: 0 incoming records found for partition {{today}}. "
-        f"Expected > 0 records from source path {{SOURCE_PATH}}. "
-        f"Possible causes: file not delivered, file format issue, encoding error, or empty export. "
-        f"Aborting to avoid writing empty partition to {{TARGET_TABLE}}."
-    )
+df_clean.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(TARGET_TABLE)
+print(f"Completed. Written to {{TARGET_TABLE}}")
 """)
 
 
@@ -268,42 +272,29 @@ def _nb_raw_to_cleansed_sales() -> str:
     return textwrap.dedent(f"""\
 # Databricks notebook source
 # MAGIC %md
-# MAGIC ## ETL: Raw → Cleansed Sales Transactions
-# MAGIC Reads raw POS sales data, applies business rules, writes to cleansed layer.
+# MAGIC ## ETL: Raw -> Cleansed Sales Transactions
+# MAGIC Reads raw POS sales from Delta table. This job SUCCEEDS.
 
 # COMMAND ----------
 
-import datetime
 from pyspark.sql import functions as F
 
-today         = datetime.datetime.utcnow().strftime("%Y-%m-%d")
-SOURCE_TABLE  = "{CATALOG}.{SCHEMA_RAW}.sales_raw"
-TARGET_SCHEMA = "{CATALOG}.confromed_sales"   # typo introduced in config: confromed not conformed
-TARGET_TABLE  = f"{{TARGET_SCHEMA}}.sales_transactions"
+SOURCE_TABLE = "{CATALOG}.{SCHEMA_RAW}.sales_raw"
+TARGET_TABLE = "{CATALOG}.{SCHEMA_CL}.sales_transactions"
 
-print(f"[{{datetime.datetime.utcnow()}}] Starting: raw → cleansed sales transactions")
-print(f"Source : {{SOURCE_TABLE}}")
-print(f"Target : {{TARGET_TABLE}}")
+print(f"Source: {{SOURCE_TABLE}}")
+print(f"Target: {{TARGET_TABLE}}")
 
-# COMMAND ----------
-
-# Read raw table — registers UC lineage
 df_raw = spark.table(SOURCE_TABLE)
-print(f"Raw records read: {{df_raw.count():,}}")
+print(f"Raw records: {{df_raw.count():,}}")
 
 df_clean = df_raw \\
     .filter(F.col("transaction_id").isNotNull()) \\
     .filter(F.col("amount") > 0) \\
     .withColumn("_ingested_at", F.current_timestamp())
 
-print(f"Records after validation: {{df_clean.count():,}}")
-
-# COMMAND ----------
-
-# Write to target — will fail if schema does not exist
-df_clean.write.format("delta") \\
-    .mode("overwrite") \\
-    .saveAsTable(TARGET_TABLE)
+df_clean.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(TARGET_TABLE)
+print(f"Completed. Written to {{TARGET_TABLE}}")
 """)
 
 
@@ -311,63 +302,51 @@ def _nb_cleansed_to_conformed_revenue() -> str:
     return textwrap.dedent(f"""\
 # Databricks notebook source
 # MAGIC %md
-# MAGIC ## ETL: Cleansed → Conformed Revenue
-# MAGIC Reads cleansed revenue export, aggregates by region/product, writes to conformed fact table.
+# MAGIC ## ETL: Cleansed -> Conformed Revenue
+# MAGIC Finance team added 'currency' column to cleansed layer — not in conformed schema.
+# MAGIC This job FAILS due to schema mismatch. Set FORCE_SUCCESS=true to bypass.
 
 # COMMAND ----------
 
-import datetime, re
+dbutils.widgets.text("FORCE_SUCCESS", "false", "Force Success")
+FORCE_SUCCESS = dbutils.widgets.get("FORCE_SUCCESS").lower() == "true"
+
 from pyspark.sql import functions as F
 
-today            = datetime.datetime.utcnow().strftime("%Y-%m-%d")
-SOURCE_TABLE     = "{CATALOG}.{SCHEMA_CL}.revenue_export"
-TARGET_TABLE     = "{CATALOG}.{SCHEMA_CF}.fact_revenue_daily"
-SOURCE_PATH      = "abfss://{SCHEMA_RAW}@datalake.dfs.core.windows.net/finance/revenue/"
-EXPECTED_PATTERN = r"revenue_export_(\\d{{4}}-\\d{{2}}-\\d{{2}})\\.csv"
+SOURCE_TABLE    = "{CATALOG}.{SCHEMA_CL}.revenue_export"
+TARGET_TABLE    = "{CATALOG}.{SCHEMA_CF}.fact_revenue_daily"
+EXPECTED_SCHEMA = ["revenue_id", "region", "product_line", "gross_revenue", "net_revenue", "export_date"]
 
-print(f"[{{datetime.datetime.utcnow()}}] Starting: cleansed → conformed revenue")
-print(f"Source table : {{SOURCE_TABLE}}")
-print(f"Target table : {{TARGET_TABLE}}")
-print(f"Partition    : {{today}}")
+print(f"Source: {{SOURCE_TABLE}}")
+print(f"Target: {{TARGET_TABLE}}")
+print(f"Expected schema: {{EXPECTED_SCHEMA}}")
 
-# COMMAND ----------
-
-# Read cleansed table — registers UC lineage
 df_cleansed = spark.table(SOURCE_TABLE)
-print(f"Cleansed records available: {{df_cleansed.count():,}}")
+actual_cols = df_cleansed.columns
+print(f"Actual schema: {{actual_cols}}")
 
-# COMMAND ----------
+unexpected = [c for c in actual_cols if c not in EXPECTED_SCHEMA and not c.startswith("_")]
 
-# Scan source path for today's file
-try:
-    files = [
-        f.name for f in
-        spark._jvm.org.apache.hadoop.fs.FileSystem
-            .get(spark._jsc.hadoopConfiguration())
-            .listStatus(spark._jvm.org.apache.hadoop.fs.Path(SOURCE_PATH))
-    ]
-except Exception:
-    files = []
-
-print(f"Files found in source path: {{files}}")
-
-# Filter to files matching expected pattern
-matching = [f for f in files if re.match(EXPECTED_PATTERN, f)]
-incoming_count = len(matching)
-print(f"Files matching pattern 'revenue_export_YYYY-MM-DD.csv': {{incoming_count}}")
-print(f"All files present: {{files}}")
-
-# COMMAND ----------
-
-# Validate: no matching files — raise premature exit
-if incoming_count == 0:
-    raise ValueError(
-        f"PrematureExit: 0 files matched pattern 'revenue_export_YYYY-MM-DD.csv' "
-        f"in {{SOURCE_PATH}} for partition {{today}}. "
-        f"Files present: {{files}}. "
-        f"Possible causes: filename format changed, file not yet delivered, or encoding issue. "
-        f"Aborting to avoid writing empty partition to {{TARGET_TABLE}}."
+if not FORCE_SUCCESS and unexpected:
+    raise Exception(
+        f"AnalysisException: Schema mismatch in {{SOURCE_TABLE}}. "
+        f"Unexpected columns: {{unexpected}}. "
+        f"Expected schema: {{EXPECTED_SCHEMA}}. "
+        f"The cleansed layer was updated with new columns not handled by the conformed transform. "
+        f"Aborting to protect data integrity of {{TARGET_TABLE}}."
     )
+
+df_agg = df_cleansed.select(EXPECTED_SCHEMA) \\
+    .groupBy("region", "product_line", "export_date") \\
+    .agg(
+        F.sum("gross_revenue").alias("total_gross_revenue"),
+        F.sum("net_revenue").alias("total_net_revenue"),
+        F.count("revenue_id").alias("record_count"),
+    ) \\
+    .withColumn("_processed_at", F.current_timestamp())
+
+df_agg.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(TARGET_TABLE)
+print(f"Completed. Written to {{TARGET_TABLE}}")
 """)
 
 
@@ -375,44 +354,52 @@ def _nb_cleansed_to_conformed_inventory() -> str:
     return textwrap.dedent(f"""\
 # Databricks notebook source
 # MAGIC %md
-# MAGIC ## ETL: Cleansed → Conformed Inventory Summary
-# MAGIC Aggregates cleansed inventory data into daily summary fact table.
+# MAGIC ## ETL: Cleansed -> Conformed Inventory Summary
+# MAGIC Fails because cleansed.inventory_daily contains null warehouse_id values (5% of records).
+# MAGIC warehouse_id is the grain key for the conformed fact table — nulls cause data integrity issues.
+# MAGIC Set FORCE_SUCCESS=true to bypass.
 
 # COMMAND ----------
 
-import datetime
+dbutils.widgets.text("FORCE_SUCCESS", "false", "Force Success")
+FORCE_SUCCESS = dbutils.widgets.get("FORCE_SUCCESS").lower() == "true"
+
 from pyspark.sql import functions as F
 
 SOURCE_TABLE = "{CATALOG}.{SCHEMA_CL}.inventory_daily"
 TARGET_TABLE = "{CATALOG}.{SCHEMA_CF}.fact_inventory_summary"
+REQUIRED_KEY = "warehouse_id"
 
-print(f"[{{datetime.datetime.utcnow()}}] Starting: cleansed → conformed inventory summary")
 print(f"Source: {{SOURCE_TABLE}}")
 print(f"Target: {{TARGET_TABLE}}")
 
-# COMMAND ----------
-
 df = spark.table(SOURCE_TABLE)
-print(f"Cleansed inventory records: {{df.count():,}}")
+total = df.count()
+print(f"Total records: {{total:,}}")
 
-df_agg = df.groupBy("warehouse_id", "load_date") \\
-           .agg(
-               F.sum("quantity").alias("total_quantity"),
-               F.countDistinct("sku").alias("distinct_skus"),
-               F.sum("unit_value").alias("total_value"),
-           ) \\
-           .withColumn("_processed_at", F.current_timestamp())
+null_count = df.filter(F.col(REQUIRED_KEY).isNull()).count()
+null_pct = round(null_count / total * 100, 1) if total > 0 else 0
+print(f"Null {{REQUIRED_KEY}}: {{null_count}} ({{null_pct}}%)")
 
-print(f"Aggregated rows: {{df_agg.count():,}}")
+if not FORCE_SUCCESS and null_count > 0:
+    raise Exception(
+        f"DataQualityException: {{null_count}} records ({{null_pct}}%) in {{SOURCE_TABLE}} "
+        f"have null {{REQUIRED_KEY}}. Required as grain key for {{TARGET_TABLE}}. "
+        f"Null grain key causes incorrect aggregations and duplicate rows. "
+        f"Aborting to protect data integrity of {{TARGET_TABLE}}."
+    )
 
-# COMMAND ----------
+df_agg = df.filter(F.col(REQUIRED_KEY).isNotNull()) \\
+    .groupBy("warehouse_id", "load_date") \\
+    .agg(
+        F.sum("quantity").alias("total_quantity"),
+        F.countDistinct("sku").alias("distinct_skus"),
+        F.sum("unit_value").alias("total_value"),
+    ) \\
+    .withColumn("_processed_at", F.current_timestamp())
 
-df_agg.write.format("delta") \\
-    .mode("overwrite") \\
-    .option("overwriteSchema", "true") \\
-    .saveAsTable(TARGET_TABLE)
-
-print(f"[{{datetime.datetime.utcnow()}}] Completed. Written to {{TARGET_TABLE}}")
+df_agg.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(TARGET_TABLE)
+print(f"Completed. Written to {{TARGET_TABLE}}")
 """)
 
 
@@ -458,15 +445,16 @@ RAW_TABLE_DDL = [
         transaction_ts TIMESTAMP
     ) USING DELTA COMMENT 'Raw POS sales transactions from Kafka CDC'""",
 
-    # revenue_export (cleansed source for revenue job)
+    # revenue_export (cleansed source for revenue job) — includes currency column
     f"""CREATE TABLE IF NOT EXISTS {CATALOG}.{SCHEMA_CL}.revenue_export (
         revenue_id    STRING NOT NULL,
         region        STRING,
         product_line  STRING,
         gross_revenue DOUBLE,
         net_revenue   DOUBLE,
-        export_date   DATE
-    ) USING DELTA COMMENT 'Cleansed revenue export from finance system'""",
+        export_date   DATE,
+        currency      STRING
+    ) USING DELTA COMMENT 'Cleansed revenue export from finance system — currency column added by finance team Oct 2026'""",
 
     # inventory_daily (cleansed — for the conformed job to read)
     f"""CREATE TABLE IF NOT EXISTS {CATALOG}.{SCHEMA_CL}.inventory_daily (
@@ -515,6 +503,9 @@ RAW_SEED_DML = [
     FROM (SELECT EXPLODE(SEQUENCE(1, 2000)) AS id)""",
 
     # revenue_export (cleansed layer) — 300 rows
+    # Add currency column before inserting (finance team added this column)
+    f"ALTER TABLE {CATALOG}.{SCHEMA_CL}.revenue_export ADD COLUMNS (currency STRING)",
+
     f"""INSERT INTO {CATALOG}.{SCHEMA_CL}.revenue_export
     SELECT
         CONCAT('REV-', LPAD(CAST(id AS STRING), 5, '0'))            AS revenue_id,
@@ -523,10 +514,12 @@ RAW_SEED_DML = [
         CASE WHEN id % 3 = 0 THEN 'Bus' WHEN id % 3 = 1 THEN 'Rail' ELSE 'Coach' END AS product_line,
         ROUND(CAST(id * 150.0 + 500.0 AS DOUBLE), 2)                AS gross_revenue,
         ROUND(CAST(id * 120.0 + 400.0 AS DOUBLE), 2)                AS net_revenue,
-        CURRENT_DATE()                                                AS export_date
+        CURRENT_DATE()                                                AS export_date,
+        CASE WHEN id % 3 = 0 THEN 'GBP' WHEN id % 3 = 1 THEN 'EUR' ELSE 'EUR' END AS currency
     FROM (SELECT EXPLODE(SEQUENCE(1, 300)) AS id)""",
 
-    # inventory_daily (cleansed layer) — 500 rows (for conformed job to succeed)
+    # inventory_daily (cleansed layer) — 500 rows + some with null warehouse_id
+    # The null warehouse_id rows will trigger the DataQualityException in conformed job
     f"""INSERT INTO {CATALOG}.{SCHEMA_CL}.inventory_daily
     SELECT
         CONCAT('INV-', LPAD(CAST(id AS STRING), 6, '0'))            AS inventory_id,
@@ -537,22 +530,61 @@ RAW_SEED_DML = [
         CURRENT_DATE()                                                AS load_date,
         CURRENT_TIMESTAMP()                                           AS _ingested_at
     FROM (SELECT EXPLODE(SEQUENCE(1, 500)) AS id)""",
+
+    # Insert ~5% rows with null warehouse_id to trigger DataQualityException
+    f"""INSERT INTO {CATALOG}.{SCHEMA_CL}.inventory_daily
+    SELECT
+        CONCAT('INV-NULL-', LPAD(CAST(id AS STRING), 4, '0'))        AS inventory_id,
+        NULL                                                           AS warehouse_id,
+        CONCAT('SKU-', LPAD(CAST((id % 200) + 1 AS STRING),4,'0'))   AS sku,
+        CAST(id * 5 AS BIGINT)                                         AS quantity,
+        ROUND(CAST(id * 1.5 AS DOUBLE), 2)                            AS unit_value,
+        CURRENT_DATE()                                                 AS load_date,
+        CURRENT_TIMESTAMP()                                            AS _ingested_at
+    FROM (SELECT EXPLODE(SEQUENCE(1, 25)) AS id)""",
 ]
 
 
-# ── DAB YAML generator (single pipeline) ─────────────────────────────────────
+# ── DAB YAML generator — single bundle, all jobs ─────────────────────────────
+BUNDLE_NAME = "demo_etl_medallion"
 
-PIPELINE_NAME = "etl_nightly_medallion"
+def _dab_bundle_yaml() -> str:
+    """Single databricks.yml covering all 5 medallion jobs per DAB convention."""
+    jobs_block = ""
+    for job in JOBS:
+        params_lines = "\n".join(
+            f"              {k}: \"{v}\""
+            for k, v in job.get("parameters", {}).items()
+        )
+        jobs_block += textwrap.dedent(f"""
+    {job['name']}:
+      name: {job['name']}
+      description: "{job['description']}"
+      schedule:
+        quartz_cron_expression: "0 0 2 * * ?"
+        timezone_id: UTC
+        pause_status: PAUSED
+      tasks:
+        - task_key: main
+          notebook_task:
+            notebook_path: {NOTEBOOK_BASE}/{job['notebook']}
+            base_parameters:
+{params_lines}
+      tags:
+        layer:            "{job['layer']}"
+        upstream_system:  "{job.get('upstream_system', '')}"
+        source_table:     "{job.get('source_table', '')}"
+        target_table:     "{job.get('target_table', '')}"
+        target_schema:    "{job.get('target_schema', '')}"
+        sla:              "{job.get('sla', '')}"
+""")
 
-def _dab_pipeline_yaml() -> str:
-    """Generate a single DAB YAML for the full multi-task medallion pipeline."""
     return textwrap.dedent(f"""\
-# Databricks Asset Bundle — generated by scripts/setup.py
-# Single pipeline covering the full medallion architecture
-# Deploy with: databricks bundle deploy
+# Databricks Asset Bundle — generated by scripts/databricks_setup.py
+# One file, all medallion jobs. Deploy with: databricks bundle deploy
 
 bundle:
-  name: {PIPELINE_NAME}
+  name: {BUNDLE_NAME}
 
 variables:
   catalog:
@@ -560,85 +592,9 @@ variables:
 
 resources:
   jobs:
-    {PIPELINE_NAME}:
-      name: {PIPELINE_NAME}
-      description: "Nightly medallion ETL pipeline: raw → cleansed → conformed"
-
-      schedule:
-        quartz_cron_expression: "0 0 2 * * ?"
-        timezone_id: UTC
-        pause_status: PAUSED
-
-      # ── Layer 1: Raw → Cleansed (runs in parallel) ──────────────────────
-      tasks:
-        - task_key: raw_to_cleansed_customers
-          description: "Ingest raw customer records from CRM nightly export"
-          notebook_task:
-            notebook_path: {NOTEBOOK_BASE}/etl_raw_to_cleansed_customers
-            base_parameters:
-              source_table: "{CATALOG}.{SCHEMA_RAW}.customers_raw"
-              target_table: "{CATALOG}.{SCHEMA_CL}.customers"
-              primary_key:  "customer_id"
-              sla:          "03:00 UTC"
-
-        - task_key: raw_to_cleansed_inventory
-          description: "Ingest daily inventory CSV from WMS SFTP drop (01:00 UTC)"
-          notebook_task:
-            notebook_path: {NOTEBOOK_BASE}/etl_raw_to_cleansed_inventory
-            base_parameters:
-              source_path:      "abfss://{SCHEMA_RAW}@datalake.dfs.core.windows.net/inventory/daily/"
-              target_table:     "{CATALOG}.{SCHEMA_CL}.inventory_daily"
-              filename_pattern: "inventory_YYYY-MM-DD.csv"
-              archive_path:     "abfss://{SCHEMA_RAW}@datalake.dfs.core.windows.net/inventory/archive/"
-              upstream_system:  "Warehouse Management System (WMS)"
-              sla:              "02:00 UTC"
-
-        - task_key: raw_to_cleansed_sales
-          description: "Ingest raw POS sales transactions from Kafka CDC"
-          notebook_task:
-            notebook_path: {NOTEBOOK_BASE}/etl_raw_to_cleansed_sales
-            base_parameters:
-              source_table:  "{CATALOG}.{SCHEMA_RAW}.sales_raw"
-              target_schema: "{CATALOG}.confromed_sales"
-              target_table:  "{CATALOG}.confromed_sales.sales_transactions"
-              upstream_system: "POS system (real-time CDC via Kafka)"
-              sla:           "04:00 UTC"
-
-        # ── Layer 2: Cleansed → Conformed (depends on Layer 1) ─────────────
-        - task_key: cleansed_to_conformed_revenue
-          description: "Aggregate revenue export into conformed fact table"
-          depends_on:
-            - task_key: raw_to_cleansed_sales
-          notebook_task:
-            notebook_path: {NOTEBOOK_BASE}/etl_cleansed_to_conformed_revenue
-            base_parameters:
-              source_path:      "abfss://{SCHEMA_RAW}@datalake.dfs.core.windows.net/finance/revenue/"
-              source_table:     "{CATALOG}.{SCHEMA_CL}.revenue_export"
-              target_table:     "{CATALOG}.{SCHEMA_CF}.fact_revenue_daily"
-              filename_pattern: "revenue_export_YYYY-MM-DD.csv"
-              upstream_system:  "Finance system revenue export (daily batch)"
-              sla:              "05:00 UTC"
-
-        - task_key: cleansed_to_conformed_inventory
-          description: "Aggregate cleansed inventory into daily summary fact"
-          depends_on:
-            - task_key: raw_to_cleansed_inventory
-          notebook_task:
-            notebook_path: {NOTEBOOK_BASE}/etl_cleansed_to_conformed_inventory
-            base_parameters:
-              source_table: "{CATALOG}.{SCHEMA_CL}.inventory_daily"
-              target_table: "{CATALOG}.{SCHEMA_CF}.fact_inventory_summary"
-              aggregation:  "daily_by_warehouse"
-              sla:          "06:00 UTC"
-
-      # Pipeline-level tags — used by RCA agent for context
-      tags:
-        architecture:   "medallion"
-        layers:         "raw,cleansed,conformed"
-        catalog:        "{CATALOG}"
-        pipeline_owner: "data-engineering"
-        schedule:       "nightly 02:00 UTC"
+{jobs_block}
 """)
+
 
 # Per-task context map — used by DABContextLoader and RCA agent
 TASK_CONTEXT = {job["name"]: job for job in JOBS}
@@ -682,39 +638,10 @@ def _upload_notebook(client: WorkspaceClient, path: str, source: str) -> None:
     )
 
 
-def _create_pipeline(client: WorkspaceClient) -> int:
-    """Create (or recreate) the single multi-task medallion pipeline job."""
-    for existing in list(client.jobs.list(name=PIPELINE_NAME)):
+def _create_job(client: WorkspaceClient, job_name: str, notebook_path: str) -> int:
+    """Create (or recreate) a single-task notebook job."""
+    for existing in list(client.jobs.list(name=job_name)):
         client.jobs.delete(job_id=existing.job_id)
-        print(f"    🗑  Deleted existing pipeline: {PIPELINE_NAME}")
-
-    tasks = []
-    for job in JOBS:
-        nb_path  = f"{NOTEBOOK_BASE}/{job['notebook']}"
-        task_key = TASK_KEY_MAP[job["name"]]
-
-        depends_on = []
-        if job["layer"] == "cleansed_to_conformed":
-            if "inventory" in job["name"]:
-                depends_on = [jobs_sdk.TaskDependency(task_key="raw_to_cleansed_inventory")]
-            elif "revenue" in job["name"]:
-                depends_on = [jobs_sdk.TaskDependency(task_key="raw_to_cleansed_sales")]
-
-        tasks.append(jobs_sdk.Task(
-            task_key=task_key,
-            description=job["description"],
-            notebook_task=jobs_sdk.NotebookTask(
-                notebook_path=nb_path,
-                base_parameters={k: str(v) for k, v in job.get("parameters", {}).items()},
-            ),
-            depends_on=depends_on if depends_on else None,
-        ))
-
-    created = client.jobs.create(name=PIPELINE_NAME, tasks=tasks)
-    return created.job_id
-
-
-
     created = client.jobs.create(
         name=job_name,
         tasks=[jobs_sdk.Task(
@@ -723,6 +650,26 @@ def _create_pipeline(client: WorkspaceClient) -> int:
         )],
     )
     return created.job_id
+
+
+def _run_job(client: WorkspaceClient, job_id: int, job_name: str) -> tuple[int, str]:
+    """Trigger a job run, return (run_id, job_name)."""
+    run = client.jobs.run_now(job_id=job_id)
+    return run.run_id, job_name
+
+
+def _wait_for_run(client: WorkspaceClient, run_id: int, job_name: str) -> str:
+    """Wait for a run to reach terminal state, return result state string."""
+    print(f"    ▶  {job_name} (run_id={run_id}) ...", end="", flush=True)
+    while True:
+        time.sleep(8)
+        details = client.jobs.get_run(run_id=run_id)
+        lc = getattr(details.state.life_cycle_state, "value", details.state.life_cycle_state)
+        if lc in {"TERMINATED", "SKIPPED", "INTERNAL_ERROR"}:
+            rs = getattr(details.state.result_state, "value", details.state.result_state)
+            print(f" {rs}")
+            return rs
+        print(".", end="", flush=True)
 
 
 def _run_and_wait(client: WorkspaceClient, job_id: int, job_name: str) -> str:
@@ -763,6 +710,7 @@ def main() -> None:
         f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA_RAW}  COMMENT 'Raw ingestion layer'",
         f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA_CL}   COMMENT 'Cleansed / validated layer'",
         f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA_CF}   COMMENT 'Conformed / business-ready layer'",
+        f"CREATE VOLUME IF NOT EXISTS {CATALOG}.{SCHEMA_RAW}.landing COMMENT 'Landing zone for raw file drops (replaces DBFS)'",
     ]:
         _sql_exec(client, stmt)
         obj = stmt.split("IF NOT EXISTS")[1].strip().split()[0]
@@ -784,9 +732,139 @@ def main() -> None:
     print("━" * 65)
 
     for dml in RAW_SEED_DML:
-        target = dml.split("INSERT INTO")[1].strip().split()[0]
+        # Handle ALTER TABLE separately — ignore "column already exists" errors
+        if dml.strip().upper().startswith("ALTER TABLE"):
+            try:
+                _sql_exec(client, dml)
+                print(f"  ✅ {dml.strip()[:70]}")
+            except RuntimeError as e:
+                if "already exists" in str(e).lower() or "duplicate" in str(e).lower():
+                    print(f"  ⚠️  Column already exists — skipping")
+                else:
+                    raise
+            continue
         _sql_exec(client, dml)
-        print(f"  ✅ {target} — seeded")
+        if "INSERT INTO" in dml:
+            target = dml.split("INSERT INTO")[1].strip().split()[0]
+            print(f"  ✅ {target} — seeded")
+
+    # ── Step 3.5: Seed DBFS files ──────────────────────────────────────────
+    print("\n━" * 65)
+    print("Step 3.5 — Seeding DBFS sample files (inventory CSV, revenue CSV)")
+    print("━" * 65)
+
+    # Upload and run a quick setup notebook that writes CSVs to DBFS
+    dbfs_setup_nb = f"{NOTEBOOK_BASE}/_dbfs_setup"
+    dbfs_setup_code = textwrap.dedent(f"""\
+# Databricks notebook source
+# Setup: write sample CSV files to DBFS for workshop demo
+
+from datetime import datetime, timedelta, timezone
+
+yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+# ── Inventory CSV (yesterday's file — for etl_raw_to_cleansed_inventory to succeed)
+dbutils.fs.mkdirs("dbfs:/demo_etl/inventory/daily")
+dbutils.fs.mkdirs("dbfs:/demo_etl/inventory/archive")
+dbutils.fs.mkdirs("dbfs:/demo_etl/finance/revenue")
+
+inventory_rows = "inventory_id,warehouse_id,sku,quantity,unit_value,load_date\\n"
+inventory_rows += "\\n".join(
+    f"INV-{{i:06d}},WH-{{(i%5)+1}},SKU-{{(i%200)+1:04d}},{{i*3+10}},{{round(i*0.75+5,2)}},{{yesterday}}"
+    for i in range(1, 201)
+)
+dbutils.fs.put(f"dbfs:/demo_etl/inventory/daily/inventory_{{yesterday}}.csv", inventory_rows, overwrite=True)
+print(f"Written: dbfs:/demo_etl/inventory/daily/inventory_{{yesterday}}.csv (200 rows)")
+
+# ── Revenue CSV (YYYYMMDD format — causes etl_cleansed_to_conformed_revenue to fail)
+today_nodash = datetime.now(timezone.utc).strftime("%Y%m%d")
+revenue_rows = "revenue_id,region,product_line,gross_revenue,net_revenue,export_date\\n"
+revenue_rows += "\\n".join(
+    f"REV-{{i:05d}},{{['UK','DE','SI','AT'][i%4]}},{{['Bus','Rail','Coach'][i%3]}},{{i*150.0+500}},{{i*120.0+400}},{{datetime.now(timezone.utc).strftime('%Y-%m-%d')}}"
+    for i in range(1, 51)
+)
+dbutils.fs.put(f"dbfs:/demo_etl/finance/revenue/revenue_export_{{today_nodash}}.csv", revenue_rows, overwrite=True)
+print(f"Written: dbfs:/demo_etl/finance/revenue/revenue_export_{{today_nodash}}.csv (50 rows, YYYYMMDD format)")
+print("DBFS setup complete.")
+""")
+    _upload_notebook(client, dbfs_setup_nb, dbfs_setup_code)
+    dbfs_job_id = None
+    for existing in list(client.jobs.list(name="_dbfs_setup")):
+        client.jobs.delete(job_id=existing.job_id)
+    dbfs_job = client.jobs.create(
+        name="_dbfs_setup",
+        tasks=[jobs_sdk.Task(
+            task_key="main",
+            notebook_task=jobs_sdk.NotebookTask(notebook_path=dbfs_setup_nb),
+        )],
+    )
+    dbfs_run = client.jobs.run_now(job_id=dbfs_job.job_id)
+    _wait_for_run(client, dbfs_run.run_id, "_dbfs_setup")
+    client.jobs.delete(job_id=dbfs_job.job_id)  # cleanup helper job
+    print("  ✅ DBFS files seeded")
+
+    # ── Step 3.5: Seed Volume files ───────────────────────────────────────
+    print("\n━" * 65)
+    print("Step 3.5 — Seeding landing zone files in UC Volume")
+    print("━" * 65)
+
+    volume_setup_nb = f"{NOTEBOOK_BASE}/_volume_setup"
+    volume_setup_code = textwrap.dedent(f"""\
+# Databricks notebook source
+# Setup: write sample files to Unity Catalog Volume landing zone
+
+from datetime import datetime, timedelta, timezone
+
+yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+today     = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+base = "{VOLUME_PATH}"
+
+# ── Create directory structure ──────────────────────────────────────────────
+for path in [
+    f"{{base}}/customers/daily",
+    f"{{base}}/inventory/daily",
+    f"{{base}}/inventory/archive",
+]:
+    dbutils.fs.mkdirs(path)
+
+# ── Customers: only yesterday's file (today's not yet delivered) ────────────
+customers_rows = "customer_id,first_name,last_name,email,country,signup_date\\n"
+customers_rows += "\\n".join(
+    f"CUST-{{i:05d}},First{{i}},Last{{i}},user{{i}}@example.com,{{['UK','DE','SI'][i%3]}},{{yesterday}}"
+    for i in range(1, 201)
+)
+dbutils.fs.put(f"{{base}}/customers/daily/customers_{{yesterday}}.csv", customers_rows, overwrite=True)
+print(f"Written: {{base}}/customers/daily/customers_{{yesterday}}.csv (200 rows)")
+print(f"NOTE: customers_{{today}}.csv intentionally absent — simulates CRM delivery delay")
+
+# ── Inventory: only yesterday's file (today's not yet delivered) ─────────────
+inventory_rows = "inventory_id,warehouse_id,sku,quantity,unit_value,load_date\\n"
+inventory_rows += "\\n".join(
+    f"INV-{{i:06d}},WH-{{(i%5)+1}},SKU-{{(i%200)+1:04d}},{{i*3+10}},{{round(i*0.75+5,2)}},{{yesterday}}"
+    for i in range(1, 301)
+)
+dbutils.fs.put(f"{{base}}/inventory/daily/inventory_{{yesterday}}.csv", inventory_rows, overwrite=True)
+print(f"Written: {{base}}/inventory/daily/inventory_{{yesterday}}.csv (300 rows)")
+print(f"NOTE: inventory_{{today}}.csv intentionally absent — simulates WMS delivery delay")
+
+print("Volume seeding complete.")
+print(f"Volume path: {{base}}")
+""")
+    _upload_notebook(client, volume_setup_nb, volume_setup_code)
+    for existing in list(client.jobs.list(name="_volume_setup")):
+        client.jobs.delete(job_id=existing.job_id)
+    vol_job = client.jobs.create(
+        name="_volume_setup",
+        tasks=[jobs_sdk.Task(
+            task_key="main",
+            notebook_task=jobs_sdk.NotebookTask(notebook_path=volume_setup_nb),
+        )],
+    )
+    vol_run = client.jobs.run_now(job_id=vol_job.job_id)
+    _wait_for_run(client, vol_run.run_id, "_volume_setup")
+    client.jobs.delete(job_id=vol_job.job_id)
+    print("  ✅ Volume files seeded")
 
     # ── Step 4: Notebooks ──────────────────────────────────────────────────
     print("\n━" * 65)
@@ -807,42 +885,55 @@ def main() -> None:
 
     # ── Step 5: DAB YAML ──────────────────────────────────────────────────
     print("\n━" * 65)
-    print("Step 5/6 — Generating DAB YAML bundle file (single pipeline)")
+    print("Step 5/6 — Generating DAB bundle (single databricks.yml, all jobs)")
     print("━" * 65)
 
     DAB_BASE.mkdir(parents=True, exist_ok=True)
-    dab_dir  = DAB_BASE / PIPELINE_NAME
-    dab_dir.mkdir(exist_ok=True)
-    dab_file = dab_dir / "databricks.yml"
-    dab_file.write_text(_dab_pipeline_yaml(), encoding="utf-8")
-    print(f"  ✅ .dab/{PIPELINE_NAME}/databricks.yml")
+    dab_file = DAB_BASE / "databricks.yml"
+    dab_file.write_text(_dab_bundle_yaml(), encoding="utf-8")
+    print(f"  ✅ .dab/databricks.yml ({len(JOBS)} jobs)")
 
-    # ── Step 6: Deploy + run pipeline ─────────────────────────────────────
+    # ── Step 6: Deploy + run all jobs in parallel ──────────────────────────
     print("\n━" * 65)
-    print("Step 6/6 — Deploying and running the medallion pipeline")
+    print("Step 6/6 — Deploying and running all jobs in parallel")
     print("━" * 65)
-    print("  This takes ~5 minutes (serverless cold start + execution)\n")
+    print("  Creating jobs...\n")
 
-    pipeline_id = _create_pipeline(client)
-    print(f"  ✅ Pipeline created: {PIPELINE_NAME} (id={pipeline_id})")
+    job_ids: dict[str, int] = {}
+    for job in JOBS:
+        nb_path = f"{NOTEBOOK_BASE}/{job['notebook']}"
+        job_id  = _create_job(client, job["name"], nb_path)
+        job_ids[job["name"]] = job_id
+        print(f"  ✅ {job['name']} (id={job_id})")
 
-    run = client.jobs.run_now(job_id=pipeline_id)
-    run_id = run.run_id
-    print(f"  ▶  Pipeline triggered (run_id={run_id}) ...", end="", flush=True)
+    print("\n  Triggering all runs simultaneously...\n")
 
-    while True:
-        time.sleep(10)
-        details = client.jobs.get_run(run_id=run_id)
-        lc = getattr(details.state.life_cycle_state, "value", str(details.state.life_cycle_state))
-        if lc in {"TERMINATED", "SKIPPED", "INTERNAL_ERROR"}:
-            rs = getattr(details.state.result_state, "value", str(details.state.result_state))
-            print(f" {rs}")
-            break
-        print(".", end="", flush=True)
+    import concurrent.futures
 
-    # Show per-task results
-    details = client.jobs.get_run(run_id=run_id)
-    tasks = getattr(details, "tasks", []) or []
+    # Trigger all runs in parallel
+    run_map: dict[int, str] = {}  # run_id → job_name
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(JOBS)) as ex:
+        futures = {
+            ex.submit(_run_job, client, job_id, job_name): job_name
+            for job_name, job_id in job_ids.items()
+        }
+        for future in concurrent.futures.as_completed(futures):
+            run_id, job_name = future.result()
+            run_map[run_id] = job_name
+            print(f"  ▶  {job_name} → run_id={run_id}")
+
+    print("\n  Waiting for all runs to complete...\n")
+
+    # Wait for all runs in parallel
+    results: dict[str, str] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(run_map)) as ex:
+        futures = {
+            ex.submit(_wait_for_run, client, run_id, job_name): job_name
+            for run_id, job_name in run_map.items()
+        }
+        for future in concurrent.futures.as_completed(futures):
+            job_name = futures[future]
+            results[job_name] = future.result()
 
     # ── Summary ────────────────────────────────────────────────────────────
     print("\n" + "=" * 65)
@@ -851,20 +942,16 @@ def main() -> None:
     print(f"\n  Catalog   : {CATALOG}")
     print(f"  Schemas   : {SCHEMA_RAW}, {SCHEMA_CL}, {SCHEMA_CF}")
     print(f"  Notebooks : {NOTEBOOK_BASE}/")
-    print(f"  DAB file  : .dab/{PIPELINE_NAME}/databricks.yml")
-    print(f"  Pipeline  : {PIPELINE_NAME} (job_id={pipeline_id})\n")
-    print("  Task results:")
-    for task in tasks:
-        task_key = getattr(task, "task_key", "unknown")
-        state    = task.state if hasattr(task, "state") else None
-        rs       = getattr(state.result_state, "value", str(state.result_state)) if state else "UNKNOWN"
-        job_def  = next((j for j in JOBS if TASK_KEY_MAP.get(j["name"]) == task_key), None)
-        expected = "FAILED" if (job_def and job_def["should_fail"]) else "SUCCEEDED"
-        ok       = rs == expected
+    print(f"  DAB file  : .dab/databricks.yml\n")
+    print("  Job results:")
+    for job in JOBS:
+        actual   = results.get(job["name"], "UNKNOWN")
+        expected = "FAILED" if job["should_fail"] else "SUCCEEDED"
+        ok       = actual == expected
         icon     = "✅" if ok else "⚠️ "
-        print(f"    {icon} {task_key}: {rs} (expected {expected})")
+        print(f"    {icon} {job['name']}: {actual} (expected {expected})")
 
-    print("\n  Unity Catalog lineage recorded for all task runs.")
+    print("\n  Unity Catalog lineage recorded for all job runs.")
     print("  Run the app: streamlit run app.py\n")
 
 

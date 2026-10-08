@@ -98,6 +98,9 @@ Score each criterion 1-10:
 
    For each step that is missing WHERE or ACCESS, your feedback must supply the exact
    value from the DAB context or UC lineage provided below.
+   IMPORTANT: Only reference paths, tables, and systems that appear in the DAB context or error logs.
+   Do NOT invent abfss://, SFTP, or other paths that are not explicitly in the provided context.
+   If a path is not in the context, say "path not available in context" rather than inventing one.
 
 ──────────────────────────────────────────────────────────────────
 3. COMPLETENESS (1-10)

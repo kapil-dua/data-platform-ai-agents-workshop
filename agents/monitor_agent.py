@@ -43,11 +43,28 @@ class MonitorAgent:
             # Get all jobs status
             all_jobs = self.databricks_client.get_all_jobs_status()
             # For multi-task pipelines, only include individual task failures (not the pipeline-level entry)
-            # The pipeline-level entry is for display only — task entries have the actionable detail
-            failed_jobs = [
-                job for job in all_jobs
-                if job['status'] == 'FAILED' and not (job.get('is_pipeline') and not job.get('is_task'))
-            ]
+            # For single-task jobs, include only the job-level entry (not the redundant task entry)
+            # Deduplicate by job_id: prefer task-level entries for multi-task, job-level for single-task
+            all_failed = [job for job in all_jobs if job['status'] == 'FAILED']
+
+            # Group by job_id, keep only the most useful entry
+            seen_job_ids: set = set()
+            failed_jobs = []
+            # First pass: task-level entries from genuine multi-task jobs
+            for job in all_failed:
+                if job.get('is_task') and job.get('pipeline_name'):
+                    jid = f"{job['job_id']}_{job.get('task_key','')}"
+                    if jid not in seen_job_ids:
+                        seen_job_ids.add(jid)
+                        seen_job_ids.add(str(job['job_id']))  # block job-level duplicate
+                        failed_jobs.append(job)
+            # Second pass: job-level entries not already covered
+            for job in all_failed:
+                if not job.get('is_task') and not job.get('is_pipeline'):
+                    jid = str(job['job_id'])
+                    if jid not in seen_job_ids:
+                        seen_job_ids.add(jid)
+                        failed_jobs.append(job)
 
             # Format data for LLM analysis
             jobs_summary = self.databricks_client.format_job_status_summary(all_jobs)
