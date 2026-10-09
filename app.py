@@ -11,6 +11,82 @@ from utils.durable_memory import WorkflowStore
 import ticker_manager
 
 
+# ── Demo helper jobs that support FORCE_SUCCESS parameter ─────────────────────
+FORCE_SUCCESS_JOBS = [
+    "etl_raw_to_cleansed_customers",
+    "etl_cleansed_to_conformed_revenue",
+    "etl_cleansed_to_conformed_inventory",
+]
+
+
+def run_jobs_with_force_success() -> dict[str, str]:
+    """Update FORCE_SUCCESS=true on failing demo jobs and trigger them.
+
+    Returns a dict of {job_name: result_state} after all runs complete.
+    """
+    import concurrent.futures
+    from databricks.sdk import WorkspaceClient
+    from databricks.sdk.service import jobs as jobs_sdk
+
+    client = WorkspaceClient(
+        host=Config.DATABRICKS_WORKSPACE_HOST,
+        token=Config.DATABRICKS_TOKEN,
+    )
+
+    def _run_with_force_success(job_name: str) -> tuple[str, str]:
+        jobs = list(client.jobs.list(name=job_name))
+        if not jobs:
+            return job_name, "NOT_FOUND"
+
+        job_id = jobs[0].job_id
+
+        # Update job parameters to set FORCE_SUCCESS=true
+        job_details = client.jobs.get(job_id=job_id)
+        tasks = job_details.settings.tasks or []
+        updated_tasks = []
+        for task in tasks:
+            nb_task = task.notebook_task
+            if nb_task:
+                params = dict(nb_task.base_parameters or {})
+                params["FORCE_SUCCESS"] = "true"
+                updated_tasks.append(jobs_sdk.Task(
+                    task_key=task.task_key,
+                    notebook_task=jobs_sdk.NotebookTask(
+                        notebook_path=nb_task.notebook_path,
+                        base_parameters=params,
+                    ),
+                ))
+            else:
+                updated_tasks.append(task)
+
+        client.jobs.update(
+            job_id=job_id,
+            new_settings=jobs_sdk.JobSettings(tasks=updated_tasks),
+        )
+
+        # Trigger the run
+        run = client.jobs.run_now(job_id=job_id)
+        run_id = run.run_id
+
+        # Wait for completion
+        while True:
+            time.sleep(8)
+            details = client.jobs.get_run(run_id=run_id)
+            lc = getattr(details.state.life_cycle_state, "value", str(details.state.life_cycle_state))
+            if lc in {"TERMINATED", "SKIPPED", "INTERNAL_ERROR"}:
+                rs = getattr(details.state.result_state, "value", str(details.state.result_state))
+                return job_name, rs
+
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+        futures = {ex.submit(_run_with_force_success, j): j for j in FORCE_SUCCESS_JOBS}
+        for f in concurrent.futures.as_completed(futures):
+            jname, rs = f.result()
+            results[jname] = rs
+
+    return results
+
+
 # Page configuration
 st.set_page_config(
     page_title="Data Platform AI Agents",
@@ -306,6 +382,33 @@ def display_sidebar():
             if review_pending:
                 st.caption("Approve or reject the pending incidents before starting another run.")
 
+            st.markdown("")
+
+            # ── Demo: force all failing jobs to succeed ────────────────────
+            with st.expander("🎭 Demo Controls", expanded=False):
+                st.caption(
+                    "Force the 3 failing demo jobs to succeed — useful for demonstrating "
+                    "the workflow when no failures are found."
+                )
+                if st.button(
+                    "✅ Run All Jobs (Force Success)",
+                    use_container_width=True,
+                    disabled=st.session_state.monitoring_running,
+                    help="Sets FORCE_SUCCESS=true on failing jobs and triggers them",
+                ):
+                    with st.spinner("Running jobs with FORCE_SUCCESS=true..."):
+                        try:
+                            results = run_jobs_with_force_success()
+                            all_ok = all(rs in ("SUCCESS", "SUCCEEDED") for rs in results.values())
+                            if all_ok:
+                                st.success("✅ All jobs succeeded! Click 'Run Monitoring Now' to see the success workflow.")
+                            else:
+                                for jname, rs in results.items():
+                                    icon = "✅" if rs in ("SUCCESS", "SUCCEEDED") else "❌"
+                                    st.write(f"{icon} `{jname}`: {rs}")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+
         st.markdown("---")
 
         # ── Agent architecture ─────────────────────────────────────────────
@@ -469,6 +572,31 @@ def display_results():
         with messages_column:
             for message in execution_log:
                 st.write(message)
+
+    # ── Token consumption summary ──────────────────────────────────────────
+    token_usage = results.get("token_usage", {})
+    if token_usage and token_usage.get("total_tokens", 0) > 0:
+        with st.expander(
+            f"💰 Token Usage — {token_usage['total_tokens']:,} tokens "
+            f"(~${token_usage['total_cost_usd']:.4f} USD)",
+            expanded=False,
+        ):
+            nodes = token_usage.get("nodes", {})
+            if nodes:
+                cols = st.columns(len(nodes))
+                for col, (node_name, usage) in zip(cols, nodes.items()):
+                    with col:
+                        st.metric(
+                            label=f"🔹 {node_name}",
+                            value=f"{usage['total_tokens']:,}",
+                            delta=f"${usage['estimated_cost_usd']:.4f}",
+                            delta_color="off",
+                        )
+                        st.caption(
+                            f"In: {usage['prompt_tokens']:,} | "
+                            f"Out: {usage['completion_tokens']:,} | "
+                            f"Calls: {usage['calls']}"
+                        )
 
     st.subheader("📊 Jobs Monitoring Status")
     jobs_data = results.get("jobs_data", {})

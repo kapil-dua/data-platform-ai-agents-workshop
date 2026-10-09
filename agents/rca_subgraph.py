@@ -45,6 +45,8 @@ class RCASubgraphState(TypedDict):
     # Output accumulated across retries
     best_result:      dict[str, Any]
     best_score:       float
+    # Optional token tracker — injected by supervisor, not required
+    _token_tracker:   Any
 
 
 # ── Node implementations ──────────────────────────────────────────────────────
@@ -55,17 +57,23 @@ def _build_rca_node(rca_agent):
     def rca_node(state: RCASubgraphState) -> dict[str, Any]:
         job      = state["job"]
         feedback = state.get("eval_feedback", "")
+        tracker  = state.get("_token_tracker")
 
         # Inject evaluator feedback for retries
         job_for_rca = {**job}
         if feedback:
             job_for_rca["evaluator_feedback"] = feedback
 
-        # Execute RCA for this single job
+        # Execute RCA for this single job (track tokens if tracker available)
         single_state = {"failed_jobs": [job_for_rca]}
-        updated      = rca_agent.execute(single_state)
-        results      = updated.get("rca_results", [])
-        result       = results[0] if results else {}
+        if tracker:
+            with tracker.track("rca"):
+                updated = rca_agent.execute(single_state)
+        else:
+            updated = rca_agent.execute(single_state)
+
+        results = updated.get("rca_results", [])
+        result  = results[0] if results else {}
 
         return {
             "rca_result":    result,
@@ -81,27 +89,34 @@ def _build_eval_node(evaluator_agent, uc_fetcher):
     def eval_node(state: RCASubgraphState) -> dict[str, Any]:
         rca       = state.get("rca_result", {})
         iteration = state.get("iteration", 1)
+        tracker   = state.get("_token_tracker")
 
         if not rca:
             return {"best_result": rca, "best_score": 0.0, "iteration": iteration}
 
-        # Throttle for Groq only
-        if Config.MODEL_PROVIDER == "groq":
-            time.sleep(int(os.getenv("RCA_EVAL_SLEEP_S", "8")))
+        # Throttle LLM calls if configured (set LLM_THROTTLE_ENABLED=true in .env)
+        if Config.LLM_THROTTLE_ENABLED:
+            time.sleep(Config.LLM_THROTTLE_SECONDS)
 
-        # Remove abfss:// references from evaluator context — they don't exist in this workspace
-        # and cause the evaluator to hallucinate abfss fix steps
+        # Remove abfss:// references from evaluator context
         clean_dab = _re.sub(r'abfss://\S+', '[ADLS path — not applicable in this environment]',
                             state.get("dab_text", ""))
         clean_dab = _re.sub(r'Source table \(for UC lineage only\):.*\n?', '', clean_dab)
 
-        evaluation = evaluator_agent.evaluate(
-            job_name=rca.get("job_name", ""),
-            error_message=rca.get("error_message", ""),
-            rca_analysis=rca.get("root_cause", ""),
-            dab_context=clean_dab,
-            uc_lineage=state.get("uc_text", ""),
-        )
+        def _run_eval():
+            return evaluator_agent.evaluate(
+                job_name=rca.get("job_name", ""),
+                error_message=rca.get("error_message", ""),
+                rca_analysis=rca.get("root_cause", ""),
+                dab_context=clean_dab,
+                uc_lineage=state.get("uc_text", ""),
+            )
+
+        if tracker:
+            with tracker.track("evaluator"):
+                evaluation = _run_eval()
+        else:
+            evaluation = _run_eval()
 
         scored = {
             **rca,

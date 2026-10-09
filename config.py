@@ -19,6 +19,11 @@ class Config:
 
     MODEL_PROVIDER = os.getenv("MODEL_PROVIDER", "")
 
+    # LLM throttling — set to true to add sleep between LLM calls (helps with rate limits)
+    # Recommended: LLM_THROTTLE_ENABLED=true for Groq free tier, false for Databricks AI Gateway
+    LLM_THROTTLE_ENABLED = os.getenv("LLM_THROTTLE_ENABLED", "false").lower() == "true"
+    LLM_THROTTLE_SECONDS = int(os.getenv("LLM_THROTTLE_SECONDS", "8"))
+
     OLLAMA_MODEL_ID = os.getenv("OLLAMA_MODEL_ID", "")
 
     # Groq API settings

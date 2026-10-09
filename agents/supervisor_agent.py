@@ -73,6 +73,7 @@ class SupervisorState(TypedDict):
     next_agent:       str
     workflow_status:  str
     error:            str
+    token_usage:      dict[str, Any]  # accumulated token usage across all nodes
     # Evaluator loop control — replace reducer so evaluator can clear-and-reset
     rca_eval_pending: Annotated[list[dict[str, Any]], _replace_reducer]
     rca_eval_done:    Annotated[list[dict[str, Any]], _replace_reducer]
@@ -100,8 +101,10 @@ class SupervisorAgent:
         self.workflow_store  = WorkflowStore()
         from tools.uc_lineage_fetcher import UCLineageFetcher
         from agents.rca_subgraph import build_rca_subgraph
+        from utils.token_tracker import TokenTracker
         self.uc_fetcher      = UCLineageFetcher(self.monitor_agent.databricks_client.workspace_client)
         self.rca_subgraph    = build_rca_subgraph(self.rca_agent, self.evaluator_agent, self.uc_fetcher)
+        self.token_tracker   = TokenTracker()
         self._last_fan_out_degree = 0
         self._last_execution_log  = []
 
@@ -202,8 +205,9 @@ class SupervisorAgent:
             HumanMessage(content=context + "\nWhat should be done next?"),
         ]
 
-        llm       = LLMClient().get_llm()
-        response  = llm.invoke(messages)
+        llm = LLMClient().get_llm()
+        with self.token_tracker.track("supervisor"):
+            response  = llm.invoke(messages)
         reasoning = response.content if hasattr(response, "content") else str(response)
         rl        = reasoning.strip().lower().split()[0] if reasoning.strip() else ""
 
@@ -289,6 +293,8 @@ class SupervisorAgent:
         sg_input = make_subgraph_input(job, self.rca_agent, self.uc_fetcher)
 
         # Invoke the compiled subgraph — runs rca→eval→retry loop in isolation
+        # Pass tracker into subgraph so it can track rca + evaluator calls
+        sg_input["_token_tracker"] = self.token_tracker
         sg_output = self.rca_subgraph.invoke(sg_input)
 
         best   = sg_output.get("best_result") or sg_output.get("rca_result", {})
@@ -312,6 +318,7 @@ class SupervisorAgent:
             "rca_eval_done":    [best] if best else [],
             "rca_current_jobs": [job],
             "agent_results":    [],
+            "token_usage":      self.token_tracker.to_dict(),
             "execution_log":    [
                 f"RCA+Eval [{job_name}]: score {score:.1f}/10 "
                 f"({chr(9989) if passed else chr(9888)}) in {iters} iteration(s)",
@@ -595,6 +602,7 @@ class SupervisorAgent:
 
     def _build_initial_state(self, task: str, session_id: str | None) -> "SupervisorState":
         """Build the zeroed-out initial state dict for a new workflow run."""
+        self.token_tracker.reset()  # fresh tracker for each run
         return {
             "task":             task,
             "workflow_run_id":  session_id or generate_session_id(prefix="etl_monitoring"),
@@ -611,6 +619,7 @@ class SupervisorAgent:
             "next_agent":       "",
             "workflow_status":  "queued",
             "error":            "",
+            "token_usage":      {},
         }
 
     # ── Public API ────────────────────────────────────────────────────────────

@@ -171,8 +171,8 @@ class RCAEvaluatorAgent:
                 break
             except Exception as e:
                 print(f"[{self.name}] Error on attempt {attempt + 1}: {e}")
-                if attempt < 2 and os.getenv("MODEL_PROVIDER", "") == "groq":
-                    time.sleep(10)
+                if attempt < 2 and Config.LLM_THROTTLE_ENABLED:
+                    time.sleep(Config.LLM_THROTTLE_SECONDS)
                 # Fallback to low scores so the retry loop triggers on parse failure
                 raw = {}
         else:
