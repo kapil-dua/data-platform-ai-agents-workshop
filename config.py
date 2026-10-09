@@ -24,6 +24,10 @@ class Config:
     LLM_THROTTLE_ENABLED = os.getenv("LLM_THROTTLE_ENABLED", "false").lower() == "true"
     LLM_THROTTLE_SECONDS = int(os.getenv("LLM_THROTTLE_SECONDS", "8"))
 
+    # Max parallel RCA jobs — reduce for rate-limited providers (e.g. Groq free tier)
+    # Set to a high number (e.g. 10) for Databricks AI Gateway which has no rate limits
+    RCA_MAX_PARALLEL = int(os.getenv("RCA_MAX_PARALLEL", "2"))
+
     OLLAMA_MODEL_ID = os.getenv("OLLAMA_MODEL_ID", "")
 
     # Groq API settings

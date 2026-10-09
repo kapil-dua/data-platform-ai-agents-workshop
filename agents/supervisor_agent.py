@@ -369,17 +369,13 @@ class SupervisorAgent:
         For Groq: caps parallelism via RCA_MAX_PARALLEL (default 2) to stay within TPM limits.
         For Databricks/Ollama: runs all jobs in parallel with no cap.
         """
-        import os
         failed_jobs = state.get("failed_jobs", [])
         if not failed_jobs:
             return END
 
-        # Only cap parallelism for Groq — Databricks AI Gateway has no rate limits
-        if Config.MODEL_PROVIDER == "groq":
-            max_parallel = int(os.getenv("RCA_MAX_PARALLEL", "2"))
-            jobs_to_run  = failed_jobs[:max_parallel]
-        else:
-            jobs_to_run = failed_jobs
+        # Cap parallelism — configurable via RCA_MAX_PARALLEL in .env
+        # Set to a low number (e.g. 2) for Groq free tier, higher for Databricks
+        jobs_to_run = failed_jobs[:Config.RCA_MAX_PARALLEL]
 
         return [
             Send("rca_subgraph", {

@@ -16,7 +16,6 @@ _rca_results_reducer.
 from __future__ import annotations
 
 import os
-import re as _re
 import time
 from typing import Annotated, Any, TypedDict
 
@@ -98,17 +97,12 @@ def _build_eval_node(evaluator_agent, uc_fetcher):
         if Config.LLM_THROTTLE_ENABLED:
             time.sleep(Config.LLM_THROTTLE_SECONDS)
 
-        # Remove abfss:// references from evaluator context
-        clean_dab = _re.sub(r'abfss://\S+', '[ADLS path — not applicable in this environment]',
-                            state.get("dab_text", ""))
-        clean_dab = _re.sub(r'Source table \(for UC lineage only\):.*\n?', '', clean_dab)
-
         def _run_eval():
             return evaluator_agent.evaluate(
                 job_name=rca.get("job_name", ""),
                 error_message=rca.get("error_message", ""),
                 rca_analysis=rca.get("root_cause", ""),
-                dab_context=clean_dab,
+                dab_context=state.get("dab_text", ""),
                 uc_lineage=state.get("uc_text", ""),
             )
 
