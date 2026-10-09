@@ -1,11 +1,21 @@
 """
 RCA Agent - Performs Root Cause Analysis for failed ETL jobs
+
+Enhanced with:
+  - DAB context (job design intent: source/target paths, upstream system, SLA)
+  - Unity Catalog lineage (runtime history: tables read/written, downstream consumers)
+
+The LLM receives not just the error log, but the full picture of what the
+job was supposed to do and who depends on its output.
 """
+import re
 from typing import Any, TypedDict
 from langchain_core.prompts import ChatPromptTemplate
 
 from agents.base_agent import AgentResult
 from tools.databricks_tools import DatabricksJobsClient
+from tools.dab_context_loader import DABContextLoader
+from tools.uc_lineage_fetcher import UCLineageFetcher
 from models.llm_client import LLMClient
 from utils.langfuse_tracing import get_prompt_and_template
 from config import Config
@@ -21,27 +31,32 @@ class RCAAgentState(TypedDict):
 
 
 class RCAAgent:
-    """Agent responsible for root cause analysis of failed jobs"""
+    """Agent responsible for root cause analysis of failed jobs.
+
+    Enriches each analysis with:
+    - DAB context: source/target paths, upstream system, filename patterns, SLA
+    - UC lineage: tables read/written, last successful write, downstream consumers
+    """
 
     PROMPT_NAME = "job-failure-rca-analysis"
 
     def __init__(self):
-        """Initialize RCA agent"""
         self.databricks_client = DatabricksJobsClient()
-        self.llm_client = LLMClient()
-        self.name = "RCA Agent"
-        self.description = "Performs root cause analysis on failed Databricks jobs by analyzing run output"
+        self.llm_client        = LLMClient()
+        self.dab_loader        = DABContextLoader()
+        self.uc_fetcher        = UCLineageFetcher(self.databricks_client.workspace_client)
+        self.name              = "RCA Agent"
+        self.description       = (
+            "Performs root cause analysis on failed Databricks jobs using "
+            "error logs, DAB job context, and Unity Catalog lineage."
+        )
 
-        # Pull the RCA prompt from Langfuse Prompt Management.
-        # ``get_prompt_and_template`` returns a LangChain ChatPromptTemplate with
-        # ``metadata={"langfuse_prompt": ...}`` so any generation produced through
-        # this template is automatically linked to the prompt version in Langfuse.
         self._langfuse_prompt, self._prompt_template = get_prompt_and_template(
             name=self.PROMPT_NAME,
             prompt_type="chat",
             fallback_messages=[
-                ("system", Config._FALLBACK_RCA_SYSTEM_PROMPT),
-                ("user", Config._FALLBACK_RCA_USER_TEMPLATE),
+                ("system", Config._RCA_SYSTEM_PROMPT),
+                ("user",   Config._RCA_USER_PROMPT),
             ],
         )
         self._chain = self._prompt_template | self.llm_client.get_llm()
@@ -51,14 +66,9 @@ class RCAAgent:
         return self.analyze_failed_jobs(state)
 
     def analyze_failed_jobs(self, state: dict) -> dict:
-        """
-        Perform RCA on all failed jobs
+        """Perform a single RCA generation pass on all failed jobs.
 
-        Args:
-            state: Current agent state containing failed jobs
-
-        Returns:
-            Updated state with RCA results
+        Results are passed to the rca_evaluator graph node for scoring.
         """
         try:
             failed_jobs = state.get("failed_jobs", [])
@@ -66,14 +76,9 @@ class RCAAgent:
             if not failed_jobs:
                 print(f"[{self.name}] No failed jobs to analyze.")
                 return {
-                    **state,
                     "rca_results": [],
-                    "execution_log": [
-                        *state.get("execution_log", []),
-                        f"{self.name}: no failed jobs to analyze",
-                    ],
+                    "execution_log": [f"{self.name}: no failed jobs to analyze"],
                     "agent_results": [
-                        *state.get("agent_results", []),
                         AgentResult(
                             agent=self.name,
                             status="completed",
@@ -83,49 +88,64 @@ class RCAAgent:
                     ],
                 }
 
-            print(f"[{self.name}] Analyzing {len(failed_jobs)} failed jobs...")
+            print(f"[{self.name}] Generating RCA for {len(failed_jobs)} failed job(s)...")
 
             rca_results = []
-
             for job in failed_jobs:
-                job_name = job['job_name']
-                run_id = job['run_id']
+                job_name = job["job_name"]
+                job_id   = job.get("job_id")
+                run_id   = job["run_id"]
+                print(f"[{self.name}] Analysing {job_name} (Run: {run_id})...")
 
-                print(f"[{self.name}] Analyzing {job_name} (Run: {run_id})...")
+                # Get error logs
+                logs = self.databricks_client.get_job_logs(job_name, run_id)
 
-                try:
-                    logs = self.databricks_client.get_job_logs(job_name, run_id)
-                    rca = self._perform_rca(job, logs)
+                # Get DAB context (job design intent)
+                dab_ctx = self.dab_loader.get_context(job_name)
+                dab_text = self.dab_loader.format_for_prompt(dab_ctx)
+                print(f"[{self.name}]   DAB context: {'found' if dab_ctx else 'not found'}")
 
-                    rca_result = {
-                        "job_name": job_name,
-                        "run_id": run_id,
-                        "error_message": job.get('error_message', 'N/A'),
-                        "root_cause": rca['root_cause'],
-                        "recommendations": rca['recommendations'],
-                        "severity": rca['severity'],
-                    }
+                # Get UC lineage (runtime history + downstream impact)
+                uc_ctx  = self.uc_fetcher.get_lineage_context(
+                    job_name=job_name,
+                    job_id=job_id,
+                )
+                uc_text = self.uc_fetcher.format_for_prompt(uc_ctx)
+                print(
+                    f"[{self.name}]   UC lineage : "
+                    f"{'found (' + str(len(uc_ctx.get('tables_written',[]))) + ' writes, ' + str(len(uc_ctx.get('downstream_consumers',[]))) + ' downstream)' if uc_ctx.get('lineage_available') else 'not found'}"
+                )
 
-                    rca_results.append(rca_result)
+                rca = self._perform_rca(job, logs, dab_text, uc_text)
 
-                except Exception:
-                    raise
+                rca_results.append({
+                    "job_name":          job_name,
+                    "run_id":            run_id,
+                    "error_message":     job.get("error_message", "N/A"),
+                    "root_cause":        rca["root_cause"],
+                    "downstream_impact": rca.get("downstream_impact", ""),
+                    "recommendations":   rca["recommendations"],
+                    "severity":          rca["severity"],
+                    "_full_response":    rca.get("_full_response", rca["root_cause"]),
+                    "dab_context":       dab_ctx,
+                    "uc_lineage":        uc_ctx,
+                    # Evaluator metadata — populated by rca_evaluator node
+                    "eval_score":            None,
+                    "eval_iterations":       1,
+                    "eval_passed":           None,
+                    "eval_scores_breakdown": None,
+                    "evaluator_feedback":    job.get("evaluator_feedback", ""),
+                })
 
-            print(f"[{self.name}] RCA complete for all failed jobs.")
-
+            print(f"[{self.name}] RCA generation complete — passing to evaluator.")
             return {
-                **state,
-                "rca_results": rca_results,
-                "execution_log": [
-                    *state.get("execution_log", []),
-                    f"{self.name}: analyzed {len(rca_results)} failed job(s)",
-                ],
+                "rca_results":  rca_results,
+                "execution_log": [f"{self.name}: generated {len(rca_results)} RCA result(s)"],
                 "agent_results": [
-                    *state.get("agent_results", []),
                     AgentResult(
                         agent=self.name,
                         status="completed",
-                        message=f"Analyzed {len(rca_results)} failed job(s)",
+                        message=f"Generated {len(rca_results)} RCA result(s)",
                         data={"rca_count": len(rca_results)},
                     ),
                 ],
@@ -134,60 +154,122 @@ class RCAAgent:
         except Exception:
             raise
 
-    def _perform_rca(self, job_info: dict, logs: str) -> dict:
-        """
-        Perform root cause analysis using the ``job-failure-rca-analysis`` managed prompt.
+    def _perform_rca(
+        self,
+        job_info: dict,
+        logs: str,
+        dab_context: str,
+        uc_lineage: str,
+    ) -> dict:
+        """Single RCA generation pass with enriched context."""
+        feedback_note = ""
+        if job_info.get("evaluator_feedback"):
+            feedback_note = (
+                f"\n\nEVALUATOR FEEDBACK (improve based on this):\n"
+                f"{job_info['evaluator_feedback']}"
+            )
 
-        Args:
-            job_info: Job information dictionary
-            logs: Databricks run output and error details
-
-        Returns:
-            Dictionary with RCA findings
-        """
         variables = {
-            "job_name": job_info["job_name"],
-            "run_id": job_info["run_id"],
-            "status": job_info["status"],
-            "error_message": job_info.get("error_message", "N/A"),
-            "logs": (logs or "")[:_JOB_LOG_TRUNCATE_CHARS],
+            "job_name":      job_info["job_name"],
+            "run_id":        job_info["run_id"],
+            "status":        job_info.get("status", "FAILED"),
+            "error_message": job_info.get("error_message", "N/A") + feedback_note,
+            "dab_context":   dab_context,
+            "uc_lineage":    uc_lineage,
+            "logs":          (logs or "")[:_JOB_LOG_TRUNCATE_CHARS],
         }
 
         response = self._chain.invoke(variables)
+        llm_response = response.content if hasattr(response, "content") else str(response)
 
-        if hasattr(response, "content"):
-            llm_response = response.content
-        elif isinstance(response, str):
-            llm_response = response
-        else:
-            llm_response = str(response)
+        # Parse structured sections from LLM response
+        sections = self._parse_sections(llm_response)
 
         return {
-            "root_cause": llm_response,
-            "recommendations": self._extract_recommendations(llm_response),
-            "severity": self._determine_severity(job_info, llm_response),
+            "root_cause":      sections.get("root_cause", llm_response),
+            "downstream_impact": sections.get("downstream_impact", ""),
+            "recommendations": sections.get("recommendations", []),
+            "severity":        self._determine_severity(job_info, llm_response),
+            "_full_response":  llm_response,
+            "_raw_response":   response,   # kept for token tracking
         }
 
-    def _extract_recommendations(self, llm_response: str) -> list:
-        """Extract recommendations from LLM response"""
-        recommendations = []
-        lines = llm_response.split('\n')
+    def _parse_sections(self, llm_response: str) -> dict:
+        """Parse the LLM response into named sections (root cause, impact, fixes, severity)."""
+        result = {"root_cause": "", "downstream_impact": "", "recommendations": [], "severity_text": ""}
 
-        for line in lines:
-            if any(keyword in line.lower() for keyword in ['recommend', 'should', 'fix', 'resolve']):
-                recommendations.append(line.strip())
+        # Flexible pattern: optional number, optional bold, section name, optional punctuation
+        section_pattern = re.compile(
+            r'(?:^|\n)\s*'
+            r'(?:\d+[\.\)]\s*)?'       # optional number like "1." or "1)"
+            r'(?:\*{1,2})?'            # optional markdown bold start
+            r'(ROOT\s*CAUSE|DOWNSTREAM\s*IMPACT|RECOMMENDED?\s*FIXES?|SEVERITY)'
+            r'(?:\*{1,2})?'            # optional markdown bold end
+            r'\s*[:\-—]?\s*',
+            re.IGNORECASE | re.MULTILINE
+        )
 
-        return recommendations[:5] if recommendations else ["Review logs manually for specific details"]
+        parts = section_pattern.split(llm_response)
+
+        if len(parts) <= 1:
+            # No section headers found — put everything in root_cause, no separate recommendations
+            result["root_cause"] = llm_response.strip()
+            return result
+
+        # parts = [pre_text, header, content, header, content, ...]
+        for i in range(1, len(parts), 2):
+            header  = parts[i].upper().strip().replace(" ", "_") if i < len(parts) else ""
+            content = parts[i + 1].strip() if i + 1 < len(parts) else ""
+
+            if "ROOT" in header and "CAUSE" in header:
+                result["root_cause"] = content
+            elif "DOWNSTREAM" in header or "IMPACT" in header:
+                result["downstream_impact"] = content
+            elif "FIX" in header or "RECOMMEND" in header:
+                steps = []
+                seen  = set()
+                for line in content.split("\n"):
+                    s = line.strip()
+                    # Skip empty lines, pure headers, section titles
+                    if not s or s.upper() in ("RECOMMENDED FIX", "RECOMMENDED FIXES", "FIX"):
+                        continue
+                    # Skip lines that are just punctuation or very short
+                    if len(s) < 5:
+                        continue
+                    key = re.sub(r'^\d+[\.\)]\s*', '', s).lower()[:80]
+                    if key not in seen:
+                        seen.add(key)
+                        steps.append(s)
+                result["recommendations"] = steps[:6]
+            elif "SEVERITY" in header:
+                result["severity_text"] = content
+
+        # Fallback: if root_cause still empty, use preamble text
+        if not result["root_cause"] and parts[0].strip():
+            result["root_cause"] = parts[0].strip()
+
+        # If still no root_cause, use full response (no separate recommendations)
+        if not result["root_cause"]:
+            result["root_cause"] = llm_response.strip()
+            result["recommendations"] = []
+
+        return result
 
     def _determine_severity(self, job_info: dict, llm_response: str) -> str:
-        """Determine severity of the failure"""
+        """Determine severity, boosting if downstream consumers are affected."""
         llm_lower = llm_response.lower()
 
-        if any(word in llm_lower for word in ['critical', 'severe', 'corruption', 'blocking']):
+        # Check if UC lineage shows downstream impact
+        uc_ctx = job_info.get("uc_lineage", {})
+        has_downstream = bool(uc_ctx.get("downstream_consumers"))
+
+        if any(w in llm_lower for w in ["critical", "severe", "corruption", "blocking"]):
             return "Critical"
-        elif any(word in llm_lower for word in ['high', 'important', 'data loss']):
+        elif any(w in llm_lower for w in ["high", "important", "data loss"]):
             return "High"
-        elif any(word in llm_lower for word in ['medium', 'moderate']):
+        elif has_downstream:
+            # If downstream consumers exist, escalate to High even if LLM says Medium
+            return "High"
+        elif any(w in llm_lower for w in ["medium", "moderate"]):
             return "Medium"
-        else:
-            return "Low"
+        return "Low"

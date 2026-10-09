@@ -70,6 +70,18 @@ class   WorkflowStore:
                 )
                 """
             )
+            # Single-row table holding the most recent completed workflow result.
+            # The ticker writes here; the UI reads from here.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS latest_result (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    run_id TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    saved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
             conn.commit()
 
     def start_run(self, run_id: str, task: str) -> None:
@@ -178,3 +190,108 @@ class   WorkflowStore:
                 ),
             )
             conn.commit()
+
+    def save_latest_result(self, run_id: str, result: dict[str, Any]) -> None:
+        """Persist the most recent workflow result for the UI to read.
+
+        Uses an upsert on id=1 so there is always at most one row — the
+        latest completed run. The ticker calls this after every run.
+        """
+        # LangGraph interrupt objects are not JSON-serialisable — strip them.
+        serialisable = {
+            k: v for k, v in result.items()
+            if k != "__interrupt__" and _is_json_serialisable(v)
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO latest_result (id, run_id, result_json, saved_at)
+                VALUES (1, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(id) DO UPDATE SET
+                    run_id     = excluded.run_id,
+                    result_json = excluded.result_json,
+                    saved_at   = CURRENT_TIMESTAMP
+                """,
+                (run_id, json.dumps(serialisable, ensure_ascii=False, default=str)),
+            )
+            conn.commit()
+
+    def get_latest_result(self) -> dict[str, Any] | None:
+        """Return the most recent workflow result saved by the ticker, or None."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT run_id, result_json, saved_at FROM latest_result WHERE id = 1"
+            ).fetchone()
+        if row is None:
+            return None
+        result = json.loads(row["result_json"])
+        result["_saved_at"] = row["saved_at"]
+        return result
+
+    def get_ticker_schedule(self) -> dict[str, Any]:
+        """Read the ticker schedule config persisted by the UI."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ticker_config (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    mode TEXT NOT NULL DEFAULT 'interval',
+                    interval_min INTEGER NOT NULL DEFAULT 30,
+                    cron_time TEXT NOT NULL DEFAULT '06:00',
+                    task TEXT NOT NULL DEFAULT 'monitor_and_analyze',
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT mode, interval_min, cron_time, task, updated_at FROM ticker_config WHERE id = 1"
+            ).fetchone()
+        if row is None:
+            return {"mode": "interval", "interval_min": 30, "cron_time": "06:00", "task": "monitor_and_analyze"}
+        return dict(row)
+
+    def save_ticker_schedule(
+        self,
+        mode: str,
+        interval_min: int,
+        cron_time: str,
+        task: str,
+    ) -> None:
+        """Persist ticker schedule config from the UI so the ticker can read it."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ticker_config (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    mode TEXT NOT NULL DEFAULT 'interval',
+                    interval_min INTEGER NOT NULL DEFAULT 30,
+                    cron_time TEXT NOT NULL DEFAULT '06:00',
+                    task TEXT NOT NULL DEFAULT 'monitor_and_analyze',
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO ticker_config (id, mode, interval_min, cron_time, task, updated_at)
+                VALUES (1, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(id) DO UPDATE SET
+                    mode         = excluded.mode,
+                    interval_min = excluded.interval_min,
+                    cron_time    = excluded.cron_time,
+                    task         = excluded.task,
+                    updated_at   = CURRENT_TIMESTAMP
+                """,
+                (mode, interval_min, cron_time, task),
+            )
+            conn.commit()
+
+
+def _is_json_serialisable(value: Any) -> bool:
+    """Return True if value can be serialised to JSON without a custom encoder."""
+    try:
+        json.dumps(value, default=str)
+        return True
+    except Exception:
+        return False

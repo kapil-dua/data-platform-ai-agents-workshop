@@ -23,9 +23,10 @@ databricks-sdk>=0.141.0
 
 # Utilities
 python-dotenv>=1.2.2
+nest_asyncio>=1.6.0
+pyyaml>=6.0.2
 
 # Testing
 pytest>=8.4.0
 
-# sqlite storage
-pysqlite3-binary
+# sqlite storage — built into Python 3.12, no extra package needed

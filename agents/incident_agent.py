@@ -52,14 +52,11 @@ class IncidentAgent:
             })
 
         return {
-            **state,
             "incident_results": incidents,
             "execution_log": [
-                *state.get("execution_log", []),
                 f"{self.name}: created {len(incidents)} demo incident(s)",
             ],
             "agent_results": [
-                *state.get("agent_results", []),
                 AgentResult(
                     agent=self.name,
                     status="completed",
@@ -69,7 +66,7 @@ class IncidentAgent:
             ],
             "workflow_status": "completed",
         }
-    
+
     def execute_jira(self, state: dict[str, Any]) -> dict[str, Any]:
         """Create Jira incidents for all RCA results approved by a human."""
         print(f"{self.name}: JIRA_ENABLED is true; creating Jira incidents through Rovo MCP")
@@ -79,15 +76,12 @@ class IncidentAgent:
         execution_status = "completed" if failed_count == 0 else "completed_with_errors"
 
         return {
-            **state,
             "incident_results": incidents,
             "execution_log": [
-                *state.get("execution_log", []),
                 f"{self.name}: created {created_count} Jira incident(s)"
                 + (f"; {failed_count} failed" if failed_count else ""),
             ],
             "agent_results": [
-                *state.get("agent_results", []),
                 AgentResult(
                     agent=self.name,
                     status=execution_status,
