@@ -18,7 +18,7 @@ Supervisor Agent (ReAct — LLM-driven routing)
     │     Results merge via Annotated reducer (shared memory pattern).
     │
     ├─► Worker 3: RCA Evaluator
-    │     Scores each RCA on Clarity, Actionability, Completeness (1-10, threshold 9.0).
+    │     Scores each RCA on Clarity, Actionability, Completeness (1-10, threshold 7.0).
     │     Context-aware: checks whether DAB context and UC lineage were actually used.
     │     Enforces WHAT + WHERE + ACCESS in every fix step.
     │     Retries below-threshold RCAs with per-criterion targeted feedback (max 3 iterations).
@@ -313,7 +313,7 @@ MODEL_PROVIDER=groq | databricks | ollama
 RCA_MAX_PARALLEL=2
 
 # Evaluator quality threshold (1-10)
-RCA_EVAL_THRESHOLD=9.0
+RCA_EVAL_THRESHOLD=7.0
 RCA_EVAL_MAX_ITERATIONS=3
 
 # Background ticker
