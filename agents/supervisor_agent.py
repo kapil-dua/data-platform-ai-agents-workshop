@@ -46,6 +46,9 @@ def _merge_token_usage(current: dict, update: dict) -> dict:
         "total_cost_usd": round(total_cost_usd, 6),
         "nodes":          merged_nodes,
     }
+
+
+def _replace_reducer(current: list, update: list) -> list:
     """Reducer that replaces the current value entirely.
     Used for rca_eval_pending where the evaluator needs to clear
     the list and set only the retry items, not append to old ones.
