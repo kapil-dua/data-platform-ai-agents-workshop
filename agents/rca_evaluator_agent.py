@@ -58,6 +58,7 @@ class RCAEvaluation(BaseModel):
     actionability_feedback: str = Field(description="Specific actionability improvement with exact values, else empty")
     completeness_feedback:  str = Field(description="Specific completeness improvement with exact values, else empty")
     feedback:               str = Field(description="Combined feedback summary for the RCA agent")
+    raw_response:        object = Field(default=None, description="Raw LLM response for token tracking", exclude=True)
 
 
 # ── Agent ─────────────────────────────────────────────────────────────────────
@@ -148,6 +149,7 @@ class RCAEvaluatorAgent:
         """Score an RCA analysis against the available job context."""
         import time
 
+        last_response = None
         for attempt in range(3):
             try:
                 messages = self._prompt.format_messages(
@@ -160,6 +162,7 @@ class RCAEvaluatorAgent:
                 )
                 response = self.llm.invoke(messages)
                 content  = response.content if hasattr(response, "content") else str(response)
+                last_response = response  # keep for token tracking
 
                 if not content or not content.strip():
                     if os.getenv("MODEL_PROVIDER", "") == "groq":
@@ -207,4 +210,5 @@ class RCAEvaluatorAgent:
             actionability_feedback=raw.get("actionability_feedback", ""),
             completeness_feedback=raw.get("completeness_feedback", ""),
             feedback=combined_feedback if not passed else "",
+            raw_response=last_response,
         )

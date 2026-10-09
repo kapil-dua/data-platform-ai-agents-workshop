@@ -65,14 +65,14 @@ def _build_rca_node(rca_agent):
 
         # Execute RCA for this single job (track tokens if tracker available)
         single_state = {"failed_jobs": [job_for_rca]}
-        if tracker:
-            with tracker.track("rca"):
-                updated = rca_agent.execute(single_state)
-        else:
-            updated = rca_agent.execute(single_state)
+        updated = rca_agent.execute(single_state)
 
         results = updated.get("rca_results", [])
         result  = results[0] if results else {}
+
+        # Record token usage from the raw response
+        if tracker and result.get("_raw_response"):
+            tracker.record("rca", result["_raw_response"])
 
         return {
             "rca_result":    result,
@@ -106,11 +106,11 @@ def _build_eval_node(evaluator_agent, uc_fetcher):
                 uc_lineage=state.get("uc_text", ""),
             )
 
-        if tracker:
-            with tracker.track("evaluator"):
-                evaluation = _run_eval()
-        else:
-            evaluation = _run_eval()
+        evaluation = _run_eval()
+
+        # Record evaluator token usage from the raw response
+        if tracker and evaluation.raw_response:
+            tracker.record("evaluator", evaluation.raw_response)
 
         scored = {
             **rca,

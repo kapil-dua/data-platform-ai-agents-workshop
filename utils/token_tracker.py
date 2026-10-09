@@ -4,58 +4,90 @@ Token Usage Tracker
 Tracks LLM token consumption and estimated cost per workflow run,
 with breakdown by node (supervisor, rca, evaluator).
 
+Works without langchain_community — reads token counts directly from
+AIMessage.response_metadata which all LangChain providers populate.
+
 Usage:
     tracker = TokenTracker()
 
-    with tracker.track("rca"):
-        result = llm.invoke(messages)
+    # Wrap an LLM invoke call:
+    response = llm.invoke(messages)
+    tracker.record("rca", response)
 
     print(tracker.summary())
-
-The tracker accumulates usage across multiple calls within the same context.
-Call tracker.reset() between workflow runs.
 """
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
-from langchain_community.callbacks import get_openai_callback
+
+# ── Cost per 1M tokens (USD) ──────────────────────────────────────────────────
+_COSTS: dict[str, dict[str, float]] = {
+    # Groq models
+    "openai/gpt-oss-20b":       {"input": 0.075,  "output": 0.300},
+    "openai/gpt-oss-120b":      {"input": 0.150,  "output": 0.600},
+    # Databricks foundation models (approximate)
+    "system.ai.meta-llama-3-1-8b-instruct": {"input": 0.100, "output": 0.300},
+    # Default fallback
+    "default":                  {"input": 0.100,  "output": 0.400},
+}
 
 
-# ── Cost per 1M tokens (USD) — update as pricing changes ─────────────────────
-# Groq pricing (as of Oct 2026)
-_GROQ_COSTS = {
-    "openai/gpt-oss-20b":  {"input": 0.075, "output": 0.30},
-    "openai/gpt-oss-120b": {"input": 0.150, "output": 0.60},
-    "default":             {"input": 0.100, "output": 0.40},
-}
-# Databricks AI Gateway — varies by model, use approximate
-_DATABRICKS_COSTS = {
-    "default": {"input": 0.100, "output": 0.30},
-}
+def _get_rates() -> dict[str, float]:
+    """Return cost rates for the currently configured model."""
+    try:
+        from config import Config
+        model = getattr(Config, "GROQ_MODEL_ID", "") or getattr(Config, "DATABRICKS_MODEL_ID", "")
+        return _COSTS.get(model, _COSTS["default"])
+    except Exception:
+        return _COSTS["default"]
+
+
+def _extract_token_counts(response: Any) -> tuple[int, int]:
+    """Extract (prompt_tokens, completion_tokens) from an LLM response.
+
+    Reads from response_metadata which all LangChain providers populate.
+    Returns (0, 0) if usage data is not available.
+    """
+    if response is None:
+        return 0, 0
+
+    # Standard location: response.response_metadata["token_usage"] or ["usage"]
+    meta = getattr(response, "response_metadata", {}) or {}
+
+    # OpenAI / Groq / Databricks AI Gateway
+    usage = meta.get("token_usage") or meta.get("usage") or {}
+    if usage:
+        prompt     = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+        completion = usage.get("completion_tokens") or usage.get("output_tokens") or 0
+        return int(prompt), int(completion)
+
+    # Fallback: usage_metadata on the message object itself
+    usage_meta = getattr(response, "usage_metadata", {}) or {}
+    if usage_meta:
+        prompt     = usage_meta.get("input_tokens") or 0
+        completion = usage_meta.get("output_tokens") or 0
+        return int(prompt), int(completion)
+
+    return 0, 0
 
 
 @dataclass
 class NodeUsage:
-    """Token usage for a single node."""
-    node:          str
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens:  int = 0
-    calls:         int = 0
+    """Accumulated token usage for a single graph node."""
+    node:               str
+    prompt_tokens:      int = 0
+    completion_tokens:  int = 0
+    total_tokens:       int = 0
+    calls:              int = 0
 
     @property
     def estimated_cost_usd(self) -> float:
-        from config import Config
-        model = getattr(Config, "GROQ_MODEL_ID", "") or getattr(Config, "DATABRICKS_MODEL_ID", "")
-        provider = getattr(Config, "MODEL_PROVIDER", "groq")
-        costs = _GROQ_COSTS if provider == "groq" else _DATABRICKS_COSTS
-        rates = costs.get(model, costs["default"])
+        rates = _get_rates()
         return (
-            self.prompt_tokens * rates["input"] / 1_000_000
+            self.prompt_tokens     * rates["input"]  / 1_000_000
             + self.completion_tokens * rates["output"] / 1_000_000
         )
 
@@ -70,35 +102,22 @@ class TokenTracker:
         """Clear all accumulated usage — call between workflow runs."""
         self._nodes.clear()
 
-    @contextmanager
-    def track(self, node: str):
-        """Context manager — track token usage for a named node.
+    def record(self, node: str, response: Any) -> None:
+        """Record token usage from an LLM response for the given node.
 
-        Usage:
-            with tracker.track("rca"):
-                llm.invoke(messages)
+        Args:
+            node:     Name of the graph node (e.g. "rca", "evaluator", "supervisor")
+            response: The AIMessage returned by llm.invoke()
         """
+        prompt, completion = _extract_token_counts(response)
         if node not in self._nodes:
             self._nodes[node] = NodeUsage(node=node)
 
-        try:
-            with get_openai_callback() as cb:
-                yield
-            # Accumulate after the context exits
-            usage = self._nodes[node]
-            usage.prompt_tokens     += cb.prompt_tokens
-            usage.completion_tokens += cb.completion_tokens
-            usage.total_tokens      += cb.total_tokens
-            usage.calls             += 1
-        except ImportError:
-            # get_openai_callback not available — track nothing, don't break
-            yield
-        except Exception:
-            # Never let token tracking break the actual workflow
-            yield
-
-    def get_node(self, node: str) -> NodeUsage | None:
-        return self._nodes.get(node)
+        usage = self._nodes[node]
+        usage.prompt_tokens     += prompt
+        usage.completion_tokens += completion
+        usage.total_tokens      += prompt + completion
+        usage.calls             += 1
 
     def all_nodes(self) -> list[NodeUsage]:
         return list(self._nodes.values())

@@ -191,6 +191,7 @@ class RCAAgent:
             "recommendations": sections.get("recommendations", []),
             "severity":        self._determine_severity(job_info, llm_response),
             "_full_response":  llm_response,
+            "_raw_response":   response,   # kept for token tracking
         }
 
     def _parse_sections(self, llm_response: str) -> dict:

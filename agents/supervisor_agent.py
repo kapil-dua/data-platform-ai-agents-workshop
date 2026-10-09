@@ -206,8 +206,8 @@ class SupervisorAgent:
         ]
 
         llm = LLMClient().get_llm()
-        with self.token_tracker.track("supervisor"):
-            response  = llm.invoke(messages)
+        response  = llm.invoke(messages)
+        self.token_tracker.record("supervisor", response)
         reasoning = response.content if hasattr(response, "content") else str(response)
         rl        = reasoning.strip().lower().split()[0] if reasoning.strip() else ""
 
