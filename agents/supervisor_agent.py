@@ -1,9 +1,9 @@
 """Supervisor Agent - Coordinates specialized worker agents via a ReAct LangGraph workflow.
 
 Architecture patterns demonstrated:
-  - Option 2: ReAct Supervisor — LLM reasons about state and decides next agent
-  - Option 3: Shared Memory   — Annotated reducers, nodes return only their contribution
-  - Option 6: Evaluator loop  — rca_evaluator is a separate graph node that loops back to rca
+    - Option 1: ReAct Supervisor — LLM reasons about state and decides next agent
+    - Option 2: Shared Memory   — Annotated reducers, nodes return only their contribution
+    - Option 4: Evaluator loop  — rca_evaluator is a separate graph node that loops back to rca
 """
 import json
 import operator
@@ -81,7 +81,7 @@ from agents.base_agent import AgentResult
 from agents.incident_agent import IncidentAgent
 from agents.monitor_agent import MonitorAgent
 from agents.rca_agent import RCAAgent
-from agents.rca_evaluator_agent import RCAEvaluatorAgent, EVAL_THRESHOLD
+from agents.rca_evaluator_agent import RCAEvaluatorAgent
 from config import Config
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
@@ -139,7 +139,7 @@ class SupervisorAgent:
         from agents.rca_subgraph import build_rca_subgraph
         from utils.token_tracker import TokenTracker
         self.uc_fetcher      = UCLineageFetcher(self.monitor_agent.databricks_client.workspace_client)
-        self.rca_subgraph    = build_rca_subgraph(self.rca_agent, self.evaluator_agent, self.uc_fetcher)
+        self.rca_subgraph    = build_rca_subgraph(self.rca_agent, self.evaluator_agent)
         self.token_tracker   = TokenTracker()
         self._last_fan_out_degree = 0
         self._last_execution_log  = []
@@ -387,7 +387,7 @@ class SupervisorAgent:
             return "rca_fan_out"
         return "end"
 
-    # ── Parallel RCA fan-out (Option 4) ──────────────────────────────────────
+    # ── Parallel RCA fan-out (Option 3) ──────────────────────────────────────
 
     def _rca_fan_out_node(self, state: SupervisorState) -> dict[str, Any]:
         """Staging node that shows up in the diagram between monitor and rca."""
@@ -400,7 +400,7 @@ class SupervisorAgent:
         }
 
     def _fan_out_rca(self, state: SupervisorState):
-        """Dispatch one Send per failed job using the LangGraph Send API (Option 4 — Parallel RCA).
+        """Dispatch one Send per failed job using the LangGraph Send API (Option 3 — Parallel RCA).
 
         For Groq: caps parallelism via RCA_MAX_PARALLEL (default 2) to stay within TPM limits.
         For Databricks/Ollama: runs all jobs in parallel with no cap.

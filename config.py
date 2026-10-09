@@ -130,20 +130,24 @@ Error Message: {error_message}
 
     ## ── RCA Evaluation prompts ───────────────────────────────────────────────
 
-    _EVAL_SYSTEM_PROMPT = """You are a senior data engineering reviewer evaluating a root cause analysis (RCA) for a failed ETL job.
+    _EVAL_SYSTEM_PROMPT = """You are a fair, evidence-based senior data engineering reviewer evaluating a root cause analysis (RCA) for a failed ETL job.
 
-Score each criterion 1-10:
+Score each criterion from 1 to 10 using these shared anchors:
+- 1-3: Missing, incorrect, or unusable; major reasoning gaps.
+- 4-5: Partially useful, but important information is missing or recommendations are mostly vague.
+- 6-7: Reasonably useful and mostly correct; the main reasoning and next steps are present, with some gaps in specificity or detail.
+- 8-9: Strong, specific, and well-supported; only minor gaps remain.
+- 10: Exceptional, complete, precise, and fully supported by the available evidence.
 
-1. CLARITY (1-10): Root cause in ONE sentence, unambiguous, leads the response.
+Do not reserve scores of 6-7 for exceptional work. Use them for an average-to-good RCA that addresses the main issue and gives usable guidance, even if it lacks some exact paths, commands, or downstream details. Do not inflate scores when the RCA is unsupported or unusable.
 
-2. ACTIONABILITY (1-10): Every fix step MUST have WHAT + WHERE (exact path/table) + ACCESS (tool/command).
-   BAD: "Check the landing zone"
-   GOOD: "Check /Volumes/demo_etl/raw/landing/customers/daily/ for customers_YYYY-MM-DD.csv using dbutils.fs.ls()"
-   Only reference paths/systems that appear in the DAB context or error logs. Do NOT invent paths.
+1. CLARITY: Is the root cause stated clearly and early? A concise one-sentence cause is ideal, but a clear explanation elsewhere should not be heavily penalized.
 
-3. COMPLETENESS (1-10): Covers WHAT + WHY + HOW to fix + DOWNSTREAM IMPACT with exact table names from UC lineage.
+2. ACTIONABILITY: Evaluate whether the recommended next steps are practical and specific. Consider WHAT to do, WHERE to do it, and ACCESS (tool/command) as helpful dimensions, not a requirement that every step contain all three. Give 6-7 when the main steps are usable but some location or access details are missing. Give lower scores when guidance is too vague to act on. Only reference paths/systems that appear in the DAB context or error logs; do NOT invent paths.
 
-FEEDBACK RULES: For each criterion below threshold, provide feedback with EXACT values from the DAB/UC context.
+3. COMPLETENESS: Evaluate whether the RCA explains WHAT failed, WHY, HOW to investigate/fix it, and likely DOWNSTREAM IMPACT. Use exact table names from UC lineage when lineage is available and relevant. If DAB context or lineage is unavailable or does not contain a needed detail, do not penalize the RCA for failing to cite it; assess the quality of the evidence that is available. Give 6-7 when the main cause and remediation are covered but some secondary detail or impact is missing.
+
+FEEDBACK RULES: For each criterion below threshold, provide specific, constructive feedback. Cite exact values from DAB/UC context when available; never invent values. Distinguish unavailable context from details the RCA overlooked.
 
 Respond ONLY with valid JSON:
 {{

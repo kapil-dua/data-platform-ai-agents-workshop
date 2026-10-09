@@ -15,13 +15,12 @@ _rca_results_reducer.
 
 from __future__ import annotations
 
-import os
 import time
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from agents.rca_evaluator_agent import EVAL_THRESHOLD, RCAEvaluatorAgent
+from agents.rca_evaluator_agent import EVAL_MAX_ITERATIONS, EVAL_THRESHOLD, RCAEvaluatorAgent
 from config import Config
 from tools.dab_context_loader import DABContextLoader
 from tools.uc_lineage_fetcher import UCLineageFetcher
@@ -82,7 +81,7 @@ def _build_rca_node(rca_agent):
     return rca_node
 
 
-def _build_eval_node(evaluator_agent, uc_fetcher):
+def _build_eval_node(evaluator_agent):
     """Return a subgraph eval node closure bound to the given evaluator instance."""
 
     def eval_node(state: RCASubgraphState) -> dict[str, Any]:
@@ -130,7 +129,7 @@ def _build_eval_node(evaluator_agent, uc_fetcher):
 
         print(
             f"[RCA Evaluator] {rca.get('job_name','?')} "
-            f"iter={iteration}/{int(os.getenv('RCA_EVAL_MAX_ITERATIONS', '3'))} "
+            f"iter={iteration}/{EVAL_MAX_ITERATIONS} "
             f"score={evaluation.overall_score:.1f} "
             f"passed={evaluation.passed}"
         )
@@ -167,16 +166,14 @@ def _route_after_eval(state: RCASubgraphState) -> str:
     """Route back to rca if the eval failed and iterations remain; otherwise end the subgraph."""
     rca       = state.get("rca_result", {})
     iteration = state.get("iteration", 1)
-    max_iters = int(os.getenv("RCA_EVAL_MAX_ITERATIONS", "3"))
-
-    if rca.get("eval_passed") or iteration > max_iters:
+    if rca.get("eval_passed") or iteration > EVAL_MAX_ITERATIONS:
         return "end"
     return "rca"
 
 
 # ── Subgraph builder ──────────────────────────────────────────────────────────
 
-def build_rca_subgraph(rca_agent, evaluator_agent, uc_fetcher):
+def build_rca_subgraph(rca_agent, evaluator_agent):
     """
     Build and compile the per-job RCA+Evaluator subgraph.
 
@@ -186,7 +183,7 @@ def build_rca_subgraph(rca_agent, evaluator_agent, uc_fetcher):
     sg = StateGraph(RCASubgraphState)
 
     sg.add_node("rca",  _build_rca_node(rca_agent))
-    sg.add_node("eval", _build_eval_node(evaluator_agent, uc_fetcher))
+    sg.add_node("eval", _build_eval_node(evaluator_agent))
 
     sg.set_entry_point("rca")
     sg.add_edge("rca", "eval")

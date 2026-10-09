@@ -1,5 +1,5 @@
 """
-RCA Evaluator Agent — Option 6: Evaluator-Optimizer Pattern
+RCA Evaluator Agent — Option 4: Evaluator-Optimizer Pattern
 
 Evaluates the quality of an RCA analysis produced by the RCA Agent.
 The evaluator is context-aware: it receives the same DAB context and UC
@@ -75,36 +75,14 @@ class RCAEvaluatorAgent:
     def __init__(self) -> None:
         self.name           = "RCA Evaluator Agent"
         self.threshold      = EVAL_THRESHOLD
-        self.max_iterations = EVAL_MAX_ITERATIONS
 
-        self.llm = self._build_llm()
+        self.llm_client = LLMClient()
+        self.llm        = self.llm_client.get_llm()
 
         self._prompt = ChatPromptTemplate.from_messages([
             ("system", Config._EVAL_SYSTEM_PROMPT),
             ("user",   Config._EVAL_USER_PROMPT),
         ])
-
-    def _build_llm(self):
-        """Build and return the LLM for evaluation, using a dedicated model if RCA_EVAL_MODEL_ID is set."""
-        eval_model_id = os.getenv("RCA_EVAL_MODEL_ID", "")
-        if eval_model_id and eval_model_id != os.getenv("GROQ_MODEL_ID", ""):
-            # Instantiate a separate Groq client for evaluation
-            try:
-                from langchain_groq import ChatGroq
-                llm = ChatGroq(
-                    groq_api_key=os.getenv("GROQ_API_KEY", ""),
-                    model=eval_model_id,
-                    temperature=0.1,
-                ).with_retry(
-                    retry_if_exception_type=(Exception,),
-                    wait_exponential_jitter=True,
-                    stop_after_attempt=4,
-                )
-                print(f"[{self.__class__.__name__}] Using dedicated eval model: {eval_model_id}")
-                return llm
-            except Exception:
-                pass
-        return LLMClient().get_llm()
 
     def _parse_json_response(self, content: str) -> dict:
         """Robustly parse JSON, stripping markdown fences. Falls back to regex extraction on malformed JSON."""
@@ -165,7 +143,7 @@ class RCAEvaluatorAgent:
                 last_response = response  # keep for token tracking
 
                 if not content or not content.strip():
-                    if os.getenv("MODEL_PROVIDER", "") == "groq":
+                    if Config.MODEL_PROVIDER == "groq":
                         print(f"[{self.name}] Empty response on attempt {attempt + 1} — waiting 10s before retry")
                         time.sleep(10)
                     continue
