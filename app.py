@@ -20,10 +20,7 @@ FORCE_SUCCESS_JOBS = [
 
 
 def run_jobs_with_force_success() -> dict[str, str]:
-    """Update FORCE_SUCCESS=true on failing demo jobs and trigger them.
-
-    Returns a dict of {job_name: result_state} after all runs complete.
-    """
+    """Update FORCE_SUCCESS=true on failing demo jobs and trigger them."""
     import concurrent.futures
     from databricks.sdk import WorkspaceClient
     from databricks.sdk.service import jobs as jobs_sdk
@@ -85,6 +82,48 @@ def run_jobs_with_force_success() -> dict[str, str]:
             results[jname] = rs
 
     return results
+
+
+def _update_force_success_param(force_value: str) -> None:
+    """Update FORCE_SUCCESS parameter on all demo jobs without triggering a run.
+
+    Args:
+        force_value: "true" to make jobs succeed, "false" to revert to failing
+    """
+    from databricks.sdk import WorkspaceClient
+    from databricks.sdk.service import jobs as jobs_sdk
+
+    client = WorkspaceClient(
+        host=Config.DATABRICKS_WORKSPACE_HOST,
+        token=Config.DATABRICKS_TOKEN,
+    )
+
+    for job_name in FORCE_SUCCESS_JOBS:
+        jobs = list(client.jobs.list(name=job_name))
+        if not jobs:
+            continue
+        job_id = jobs[0].job_id
+        job_details = client.jobs.get(job_id=job_id)
+        tasks = job_details.settings.tasks or []
+        updated_tasks = []
+        for task in tasks:
+            nb_task = task.notebook_task
+            if nb_task:
+                params = dict(nb_task.base_parameters or {})
+                params["FORCE_SUCCESS"] = force_value
+                updated_tasks.append(jobs_sdk.Task(
+                    task_key=task.task_key,
+                    notebook_task=jobs_sdk.NotebookTask(
+                        notebook_path=nb_task.notebook_path,
+                        base_parameters=params,
+                    ),
+                ))
+            else:
+                updated_tasks.append(task)
+        client.jobs.update(
+            job_id=job_id,
+            new_settings=jobs_sdk.JobSettings(tasks=updated_tasks),
+        )
 
 
 # Page configuration
@@ -390,24 +429,39 @@ def display_sidebar():
                     "Force the 3 failing demo jobs to succeed — useful for demonstrating "
                     "the workflow when no failures are found."
                 )
-                if st.button(
-                    "✅ Run All Jobs (Force Success)",
-                    width='stretch',
-                    disabled=st.session_state.monitoring_running,
-                    help="Sets FORCE_SUCCESS=true on failing jobs and triggers them",
-                ):
-                    with st.spinner("Running jobs with FORCE_SUCCESS=true..."):
-                        try:
-                            results = run_jobs_with_force_success()
-                            all_ok = all(rs in ("SUCCESS", "SUCCEEDED") for rs in results.values())
-                            if all_ok:
-                                st.success("✅ All jobs succeeded! Click 'Run Monitoring Now' to see the success workflow.")
-                            else:
-                                for jname, rs in results.items():
-                                    icon = "✅" if rs in ("SUCCESS", "SUCCEEDED") else "❌"
-                                    st.write(f"{icon} `{jname}`: {rs}")
-                        except Exception as e:
-                            st.error(f"Error: {e}")
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button(
+                        "✅ Force Success",
+                        width="stretch",
+                        disabled=st.session_state.monitoring_running,
+                        help="Sets FORCE_SUCCESS=true and runs all 3 failing jobs",
+                    ):
+                        with st.spinner("Running jobs with FORCE_SUCCESS=true..."):
+                            try:
+                                results = run_jobs_with_force_success()
+                                all_ok = all(rs in ("SUCCESS", "SUCCEEDED") for rs in results.values())
+                                if all_ok:
+                                    st.success("✅ All jobs succeeded! Click 'Run Monitoring Now' to see the success workflow.")
+                                else:
+                                    for jname, rs in results.items():
+                                        icon = "✅" if rs in ("SUCCESS", "SUCCEEDED") else "❌"
+                                        st.write(f"{icon} `{jname.split('/')[-1]}`: {rs}")
+                            except Exception as e:
+                                st.error(f"Error: {e}")
+                with col2:
+                    if st.button(
+                        "❌ Revert to Failures",
+                        width="stretch",
+                        disabled=st.session_state.monitoring_running,
+                        help="Sets FORCE_SUCCESS=false on all 3 jobs — next run will fail again",
+                    ):
+                        with st.spinner("Reverting FORCE_SUCCESS=false..."):
+                            try:
+                                _update_force_success_param("false")
+                                st.success("↩️ Reverted. Next job run will fail as expected.")
+                            except Exception as e:
+                                st.error(f"Error: {e}")
 
         st.markdown("---")
 
