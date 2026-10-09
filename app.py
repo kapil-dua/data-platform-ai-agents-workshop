@@ -292,7 +292,7 @@ def display_sidebar():
                 if st.button(
                     "▶ Start Ticker",
                     type="primary",
-                    use_container_width=True,
+                    width='stretch',
                     disabled=running,
                 ):
                     store.save_ticker_schedule(
@@ -313,14 +313,14 @@ def display_sidebar():
             with stop_col:
                 if st.button(
                     "⏹ Stop Ticker",
-                    use_container_width=True,
+                    width='stretch',
                     disabled=not running,
                 ):
                     msg = ticker_manager.stop()
                     st.info(msg)
                     st.rerun()
 
-            if st.button("🔄 Apply New Schedule", use_container_width=True, disabled=not running):
+            if st.button("🔄 Apply New Schedule", width='stretch', disabled=not running):
                 ticker_manager.stop()
                 store.save_ticker_schedule(
                     mode=ticker_mode,
@@ -372,7 +372,7 @@ def display_sidebar():
             if st.button(
                 "▶️ Run Monitoring Now",
                 type="primary",
-                use_container_width=True,
+                width='stretch',
                 disabled=review_pending or st.session_state.monitoring_running,
             ):
                 st.session_state.workflow_task = "monitor_analyze_incident"
@@ -392,7 +392,7 @@ def display_sidebar():
                 )
                 if st.button(
                     "✅ Run All Jobs (Force Success)",
-                    use_container_width=True,
+                    width='stretch',
                     disabled=st.session_state.monitoring_running,
                     help="Sets FORCE_SUCCESS=true on failing jobs and triggers them",
                 ):
@@ -477,7 +477,7 @@ def run_monitoring():
             if workflow_graph:
                 with graph_placeholder.container():
                     st.caption("Executed path highlighted in green")
-                    st.graphviz_chart(workflow_graph, use_container_width=True)
+                    st.graphviz_chart(workflow_graph, width='stretch')
 
             if node == "monitor":
                 jobs_data    = state.get("jobs_data", {})
@@ -620,7 +620,7 @@ def display_results():
     st.subheader("🔍 Monitor Agent - Result")
     if "all_jobs" in jobs_data and jobs_data["all_jobs"]:
         import pandas as pd
-        st.dataframe(pd.DataFrame(jobs_data["all_jobs"]), use_container_width=True)
+        st.dataframe(pd.DataFrame(jobs_data["all_jobs"]), width='stretch')
     else:
         st.info("No job details available")
 
@@ -750,7 +750,7 @@ def display_results():
             submitted = st.form_submit_button(
                 f"Submit Decisions",
                 type="primary",
-                use_container_width=True,
+                width='stretch',
             )
 
         if submitted:
@@ -759,7 +759,7 @@ def display_results():
 
     if incident_results:
         st.subheader("Incident Agent - Result")
-        st.dataframe(incident_results, use_container_width=True)
+        st.dataframe(incident_results, width='stretch')
 
     st.markdown("---")
 

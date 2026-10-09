@@ -12,7 +12,40 @@ import sqlite3
 from typing import Annotated, Any, Literal, TypedDict
 
 
-def _replace_reducer(current: list, update: list) -> list:
+def _merge_token_usage(current: dict, update: dict) -> dict:
+    """Merge token usage dicts from parallel branches.
+
+    Each parallel rca_subgraph branch writes its own token counts.
+    This reducer accumulates totals and merges per-node breakdowns.
+    """
+    if not update:
+        return current
+    if not current:
+        return update
+
+    merged_nodes: dict = {}
+    # Merge nodes from both current and update
+    for node_name in set(list((current.get("nodes") or {}).keys()) +
+                         list((update.get("nodes") or {}).keys())):
+        cur_node  = (current.get("nodes") or {}).get(node_name, {})
+        upd_node  = (update.get("nodes") or {}).get(node_name, {})
+        merged_nodes[node_name] = {
+            "calls":              (cur_node.get("calls", 0) + upd_node.get("calls", 0)),
+            "prompt_tokens":      (cur_node.get("prompt_tokens", 0) + upd_node.get("prompt_tokens", 0)),
+            "completion_tokens":  (cur_node.get("completion_tokens", 0) + upd_node.get("completion_tokens", 0)),
+            "total_tokens":       (cur_node.get("total_tokens", 0) + upd_node.get("total_tokens", 0)),
+            "estimated_cost_usd": round(
+                cur_node.get("estimated_cost_usd", 0.0) + upd_node.get("estimated_cost_usd", 0.0), 6
+            ),
+        }
+
+    total_tokens   = sum(n["total_tokens"] for n in merged_nodes.values())
+    total_cost_usd = sum(n["estimated_cost_usd"] for n in merged_nodes.values())
+    return {
+        "total_tokens":   total_tokens,
+        "total_cost_usd": round(total_cost_usd, 6),
+        "nodes":          merged_nodes,
+    }
     """Reducer that replaces the current value entirely.
     Used for rca_eval_pending where the evaluator needs to clear
     the list and set only the retry items, not append to old ones.
@@ -73,7 +106,7 @@ class SupervisorState(TypedDict):
     next_agent:       str
     workflow_status:  str
     error:            str
-    token_usage:      dict[str, Any]  # accumulated token usage across all nodes
+    token_usage:      Annotated[dict[str, Any], _merge_token_usage]  # accumulated token usage across all nodes
     # Evaluator loop control — replace reducer so evaluator can clear-and-reset
     rca_eval_pending: Annotated[list[dict[str, Any]], _replace_reducer]
     rca_eval_done:    Annotated[list[dict[str, Any]], _replace_reducer]
