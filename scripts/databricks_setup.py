@@ -3,12 +3,12 @@ Workshop Setup Script — Medallion Architecture Demo
 ====================================================
 Creates the full demo environment for the FLO 2026 workshop:
 
-  1. Unity Catalog  — catalog: demo_etl, schemas: raw / cleansed / conformed
+  1. Unity Catalog  — catalog: demo_etl, schemas: raw / cleansed / conformed + landing volume
   2. Raw tables     — seeds sample data into Delta tables
   3. Notebooks      — uploads medallion ETL notebooks to /Shared/demo_etl/
-  4. DAB YAMLs      — writes databricks.yml bundle files to .dab/ per job
-  5. Jobs           — deploys 5 jobs (3 failing, 2 succeeding)
-  6. Runs           — triggers all jobs and waits (generates UC lineage)
+  4. DAB YAML       — writes single .dab/databricks.yml bundle (all 5 jobs)
+  5. Jobs           — deploys 5 separate jobs (3 failing, 2 succeeding)
+  6. Runs           — triggers all jobs in parallel (generates UC lineage)
 
 Total setup time: ~5-6 minutes (mostly job run cold starts)
 
@@ -171,10 +171,8 @@ def _nb_raw_to_cleansed_customers() -> str:
 # Databricks notebook source
 # MAGIC %md
 # MAGIC ## ETL: Raw -> Cleansed Customers
-# MAGIC Reads CRM daily export CSV from UC Volume landing zone.
-# MAGIC Expected: /Volumes/{CATALOG}/{SCHEMA_RAW}/landing/customers/daily/customers_YYYY-MM-DD.csv
-# MAGIC Today's file is absent (CRM delivery delayed) so this job FAILS.
-# MAGIC Set FORCE_SUCCESS=true to bypass.
+# MAGIC Reads CRM daily export CSV from UC Volume. Fails when today's file is not delivered.
+# MAGIC Set FORCE_SUCCESS=true to bypass (writes from raw Delta table instead).
 
 # COMMAND ----------
 
@@ -184,18 +182,21 @@ FORCE_SUCCESS = dbutils.widgets.get("FORCE_SUCCESS").lower() == "true"
 from datetime import datetime, timedelta, timezone
 from pyspark.sql import functions as F
 
+# Dates computed at runtime — NOT hardcoded
 today         = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 yesterday_str = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
-VOLUME_PATH   = "/Volumes/{CATALOG}/{SCHEMA_RAW}/landing/customers/daily"
-SOURCE_TABLE  = "{CATALOG}.{SCHEMA_RAW}.customers_raw"
-TARGET_TABLE  = "{CATALOG}.{SCHEMA_CL}.customers"
-TODAY_FILE    = f"{{VOLUME_PATH}}/customers_{{today}}.csv"
 
-print(f"Expected: {{TODAY_FILE}}")
-print(f"FORCE_SUCCESS: {{FORCE_SUCCESS}}")
+VOLUME_PATH  = "/Volumes/{CATALOG}/{SCHEMA_RAW}/landing/customers/daily"
+SOURCE_TABLE = "{CATALOG}.{SCHEMA_RAW}.customers_raw"
+TARGET_TABLE = "{CATALOG}.{SCHEMA_CL}.customers"
+TODAY_FILE   = f"{{VOLUME_PATH}}/customers_{{today}}.csv"
 
+print(f"Expected file  : {{TODAY_FILE}}")
+print(f"FORCE_SUCCESS  : {{FORCE_SUCCESS}}")
+
+# Register UC lineage
 df_raw = spark.table(SOURCE_TABLE)
-print(f"Raw table: {{df_raw.count():,}} records")
+print(f"Raw table      : {{df_raw.count()}} records")
 
 try:
     df_incoming = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load(TODAY_FILE)
@@ -211,14 +212,19 @@ if not FORCE_SUCCESS and incoming_count == 0:
     raise FileNotFoundError(
         f"FileNotFoundError: CRM export not found for {{today}} at {{TODAY_FILE}}. "
         f"Last delivery: {{VOLUME_PATH}}/customers_{{yesterday_str}}.csv. "
-        f"Possible causes: CRM nightly batch delayed, SFTP transfer failed, file not generated. "
+        f"Possible causes: CRM nightly batch delayed, SFTP transfer failed. "
         f"Aborting to avoid stale data in {{TARGET_TABLE}}."
     )
 
-df_clean = df_incoming \\
-    .filter(F.col("customer_id").isNotNull()) \\
-    .dropDuplicates(["customer_id"]) \\
-    .withColumn("load_date", F.current_date()) \\
+# Use volume file if found, else fall back to raw Delta table (FORCE_SUCCESS path)
+df_to_write = df_incoming if (df_incoming is not None and incoming_count > 0) else df_raw
+if incoming_count == 0:
+    print("FORCE_SUCCESS: falling back to raw Delta table as source")
+
+df_clean = df_to_write \\\\
+    .filter(F.col("customer_id").isNotNull()) \\\\
+    .dropDuplicates(["customer_id"]) \\\\
+    .withColumn("load_date", F.current_date()) \\\\
     .withColumn("_ingested_at", F.current_timestamp())
 
 df_clean.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(TARGET_TABLE)
@@ -889,6 +895,14 @@ print(f"Volume path: {{base}}")
     print("━" * 65)
 
     DAB_BASE.mkdir(parents=True, exist_ok=True)
+
+    # Remove old per-job subdirectories if they exist (legacy from pipeline approach)
+    import shutil
+    for old_dir in DAB_BASE.iterdir():
+        if old_dir.is_dir():
+            shutil.rmtree(old_dir)
+            print(f"  🗑  Removed old DAB dir: {old_dir.name}/")
+
     dab_file = DAB_BASE / "databricks.yml"
     dab_file.write_text(_dab_bundle_yaml(), encoding="utf-8")
     print(f"  ✅ .dab/databricks.yml ({len(JOBS)} jobs)")
