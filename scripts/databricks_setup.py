@@ -221,11 +221,12 @@ df_to_write = df_incoming if (df_incoming is not None and incoming_count > 0) el
 if incoming_count == 0:
     print("FORCE_SUCCESS: falling back to raw Delta table as source")
 
-df_clean = df_to_write \\\\
-    .filter(F.col("customer_id").isNotNull()) \\\\
-    .dropDuplicates(["customer_id"]) \\\\
-    .withColumn("load_date", F.current_date()) \\\\
+df_clean = (df_to_write
+    .filter(F.col("customer_id").isNotNull())
+    .dropDuplicates(["customer_id"])
+    .withColumn("load_date", F.current_date())
     .withColumn("_ingested_at", F.current_timestamp())
+)
 
 df_clean.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(TARGET_TABLE)
 print(f"Completed. Written to {{TARGET_TABLE}}")
