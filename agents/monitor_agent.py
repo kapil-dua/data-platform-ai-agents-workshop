@@ -1,22 +1,14 @@
 """
 Monitor Agent - Monitors Data Platform ETL job status
 """
-from typing import Any, TypedDict
+from typing import Any
 from agents.base_agent import AgentResult
 from tools.databricks_tools import DatabricksJobsClient
-from models.llm_client import LLMClient
-
-
-class MonitorAgentState(TypedDict):
-    """State for monitor agent"""
-    jobs_data: dict
-    summary: str
-    failed_jobs: list
 
 
 class MonitorAgent:
-    """Agent responsible for monitoring Databricks job status"""
-    
+    """Agent responsible for monitoring Databricks job status."""
+
     def __init__(self):
         """Initialize monitor agent"""
         self.databricks_client = DatabricksJobsClient()
@@ -26,7 +18,7 @@ class MonitorAgent:
     def execute(self, state: dict[str, Any]) -> dict[str, Any]:
         """Execute monitoring using the common worker-agent contract."""
         return self.monitor_jobs(state)
-    
+
     def monitor_jobs(self, state: dict) -> dict:
         """
         Monitor all Databricks jobs and return their status
@@ -101,11 +93,3 @@ class MonitorAgent:
 
         except Exception:
             raise
-    
-    def get_job_details(self, job_name: str) -> dict:
-        """Get detailed information about a specific job"""
-        job_runs = self.databricks_client.get_job_runs(job_name, max_results=5)
-        return {
-            "job_name": job_name,
-            "recent_runs": job_runs
-        }

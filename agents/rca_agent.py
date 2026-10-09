@@ -8,6 +8,7 @@ Enhanced with:
 The LLM receives not just the error log, but the full picture of what the
 job was supposed to do and who depends on its output.
 """
+import re
 from typing import Any, TypedDict
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -21,55 +22,6 @@ from config import Config
 
 
 _JOB_LOG_TRUNCATE_CHARS = 3000
-
-# ── Fallback system prompt (used when Langfuse is unavailable) ────────────────
-_FALLBACK_SYSTEM = """You are an expert data engineer performing root cause analysis on failed ETL jobs.
-
-You will be given:
-1. Job error logs and stack trace
-2. Job context from the DAB (Databricks Asset Bundle) — documentation of what the job is designed to do
-3. Unity Catalog lineage — what tables the job reads/writes and who depends on its output
-
-CRITICAL RULES:
-- Every path, table name, filename, system name and config value you mention MUST come from the context or error logs. Do not invent values.
-- DAB parameters (source_path, filename_pattern, etc.) are DOCUMENTATION only — they describe what the job does. Do NOT suggest changing DAB parameters unless the error proves a parameter is misconfigured.
-- If a filename pattern is wrong in the CODE, the fix is to update the code regex, not the DAB documentation.
-- If a file is missing, the fix is to deliver the correct file, not to change the expected pattern.
-- The RECOMMENDED FIX must address ONLY the specific failure shown in the error. Maximum 4 steps.
-- Do not add unrelated configuration or DAB update suggestions.
-
-Your analysis must include:
-
-1. ROOT CAUSE — one clear sentence: what failed and exactly why, using values from the error.
-
-2. DOWNSTREAM IMPACT — exact downstream tables or jobs affected (from UC lineage). If none, say "No downstream impact identified."
-
-3. RECOMMENDED FIX — numbered steps addressing ONLY the actual error.
-   Each step: WHAT to do + WHERE exactly (exact path/table/system from context) + HOW to access.
-   For missing files: the fix is to deliver the correct file to the expected path, not update patterns.
-   For schema mismatches in conformed jobs: the fix is to update the transform code to handle new columns.
-   For filename format changes (upstream changed their format): the fix is to ask the upstream team
-   to revert to the original format, OR to rename/reformat the file to match what the code expects.
-   Do NOT suggest changing the code's expected pattern — the pattern reflects the data contract.
-
-4. SEVERITY — Critical / High / Medium / Low with one-line justification.
-
-Be specific and grounded in the context only. Do not speculate."""
-
-_FALLBACK_USER = """\
-Job Name: {job_name}
-Run ID: {run_id}
-Status: {status}
-Error Message: {error_message}
-
-=== JOB DESIGN CONTEXT (from DAB) ===
-{dab_context}
-
-=== RUNTIME LINEAGE CONTEXT (Unity Catalog) ===
-{uc_lineage}
-
-=== JOB LOGS ===
-{logs}"""
 
 
 class RCAAgentState(TypedDict):
@@ -115,6 +67,7 @@ class RCAAgent:
 
     def analyze_failed_jobs(self, state: dict) -> dict:
         """Perform a single RCA generation pass on all failed jobs.
+
         Results are passed to the rca_evaluator graph node for scoring.
         """
         try:
@@ -241,12 +194,7 @@ class RCAAgent:
         }
 
     def _parse_sections(self, llm_response: str) -> dict:
-        """Parse structured LLM response into named sections.
-
-        Handles various header formats:
-          1. ROOT CAUSE:  /  **ROOT CAUSE**  /  ROOT CAUSE —  /  ROOT CAUSE
-        """
-        import re
+        """Parse the LLM response into named sections (root cause, impact, fixes, severity)."""
         result = {"root_cause": "", "downstream_impact": "", "recommendations": [], "severity_text": ""}
 
         # Flexible pattern: optional number, optional bold, section name, optional punctuation
@@ -305,24 +253,6 @@ class RCAAgent:
             result["recommendations"] = []
 
         return result
-
-    def _extract_recommendations(self, llm_response: str) -> list:
-        """Extract recommendation lines from LLM response, deduplicated."""
-        seen = set()
-        recommendations = []
-        for line in llm_response.split("\n"):
-            stripped = line.strip()
-            if not stripped:
-                continue
-            # Match lines that look like actionable steps
-            if any(kw in stripped.lower() for kw in
-                   ["recommend", "should", "fix", "resolve", "check", "update", "contact", "verify"]):
-                # Deduplicate by normalised lowercase
-                key = stripped.lower()[:80]
-                if key not in seen:
-                    seen.add(key)
-                    recommendations.append(stripped)
-        return recommendations[:5] if recommendations else ["Review logs and DAB config for specific details"]
 
     def _determine_severity(self, job_info: dict, llm_response: str) -> str:
         """Determine severity, boosting if downstream consumers are affected."""

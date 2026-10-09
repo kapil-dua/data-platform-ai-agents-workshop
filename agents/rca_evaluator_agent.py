@@ -76,13 +76,21 @@ class RCAEvaluatorAgent:
         self.threshold      = EVAL_THRESHOLD
         self.max_iterations = EVAL_MAX_ITERATIONS
 
-        # Use a dedicated evaluator model if configured, otherwise fall back to main LLM
+        self.llm = self._build_llm()
+
+        self._prompt = ChatPromptTemplate.from_messages([
+            ("system", Config._EVAL_SYSTEM_PROMPT),
+            ("user",   Config._EVAL_USER_PROMPT),
+        ])
+
+    def _build_llm(self):
+        """Build and return the LLM for evaluation, using a dedicated model if RCA_EVAL_MODEL_ID is set."""
         eval_model_id = os.getenv("RCA_EVAL_MODEL_ID", "")
         if eval_model_id and eval_model_id != os.getenv("GROQ_MODEL_ID", ""):
             # Instantiate a separate Groq client for evaluation
             try:
                 from langchain_groq import ChatGroq
-                self.llm = ChatGroq(
+                llm = ChatGroq(
                     groq_api_key=os.getenv("GROQ_API_KEY", ""),
                     model=eval_model_id,
                     temperature=0.1,
@@ -92,17 +100,10 @@ class RCAEvaluatorAgent:
                     stop_after_attempt=4,
                 )
                 print(f"[{self.__class__.__name__}] Using dedicated eval model: {eval_model_id}")
+                return llm
             except Exception:
-                from models.llm_client import LLMClient
-                self.llm = LLMClient().get_llm()
-        else:
-            from models.llm_client import LLMClient
-            self.llm = LLMClient().get_llm()
-
-        self._prompt = ChatPromptTemplate.from_messages([
-            ("system", Config._EVAL_SYSTEM_PROMPT),
-            ("user",   Config._EVAL_USER_PROMPT),
-        ])
+                pass
+        return LLMClient().get_llm()
 
     def _parse_json_response(self, content: str) -> dict:
         """Robustly parse JSON, stripping markdown fences. Falls back to regex extraction on malformed JSON."""
@@ -172,8 +173,10 @@ class RCAEvaluatorAgent:
                 print(f"[{self.name}] Error on attempt {attempt + 1}: {e}")
                 if attempt < 2 and os.getenv("MODEL_PROVIDER", "") == "groq":
                     time.sleep(10)
+                # Fallback to low scores so the retry loop triggers on parse failure
                 raw = {}
         else:
+            # Fallback to low scores so the retry loop triggers on parse failure
             raw = {}
 
         clarity       = float(raw.get("clarity_score", 3))

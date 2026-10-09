@@ -16,6 +16,7 @@ _rca_results_reducer.
 from __future__ import annotations
 
 import os
+import re as _re
 import time
 from typing import Annotated, Any, TypedDict
 
@@ -48,8 +49,8 @@ class RCASubgraphState(TypedDict):
 
 # ── Node implementations ──────────────────────────────────────────────────────
 
-def _make_rca_node(rca_agent):
-    """Return a subgraph rca node bound to the given RCAAgent instance."""
+def _build_rca_node(rca_agent):
+    """Return a subgraph rca node closure bound to the given RCAAgent instance."""
 
     def rca_node(state: RCASubgraphState) -> dict[str, Any]:
         job      = state["job"]
@@ -74,8 +75,8 @@ def _make_rca_node(rca_agent):
     return rca_node
 
 
-def _make_eval_node(evaluator_agent, uc_fetcher):
-    """Return a subgraph eval node bound to the given evaluator instance."""
+def _build_eval_node(evaluator_agent, uc_fetcher):
+    """Return a subgraph eval node closure bound to the given evaluator instance."""
 
     def eval_node(state: RCASubgraphState) -> dict[str, Any]:
         rca       = state.get("rca_result", {})
@@ -88,7 +89,6 @@ def _make_eval_node(evaluator_agent, uc_fetcher):
         if Config.MODEL_PROVIDER == "groq":
             time.sleep(int(os.getenv("RCA_EVAL_SLEEP_S", "8")))
 
-        import re as _re
         # Remove abfss:// references from evaluator context — they don't exist in this workspace
         # and cause the evaluator to hallucinate abfss fix steps
         clean_dab = _re.sub(r'abfss://\S+', '[ADLS path — not applicable in this environment]',
@@ -155,7 +155,7 @@ def _make_eval_node(evaluator_agent, uc_fetcher):
 
 
 def _route_after_eval(state: RCASubgraphState) -> str:
-    """Loop back to rca if failed and iterations remain, else end."""
+    """Route back to rca if the eval failed and iterations remain; otherwise end the subgraph."""
     rca       = state.get("rca_result", {})
     iteration = state.get("iteration", 1)
     max_iters = int(os.getenv("RCA_EVAL_MAX_ITERATIONS", "3"))
@@ -176,8 +176,8 @@ def build_rca_subgraph(rca_agent, evaluator_agent, uc_fetcher):
     """
     sg = StateGraph(RCASubgraphState)
 
-    sg.add_node("rca",  _make_rca_node(rca_agent))
-    sg.add_node("eval", _make_eval_node(evaluator_agent, uc_fetcher))
+    sg.add_node("rca",  _build_rca_node(rca_agent))
+    sg.add_node("eval", _build_eval_node(evaluator_agent, uc_fetcher))
 
     sg.set_entry_point("rca")
     sg.add_edge("rca", "eval")

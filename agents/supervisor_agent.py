@@ -50,6 +50,7 @@ from config import Config
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, Send, interrupt
+from models.llm_client import LLMClient
 from utils.durable_memory import WorkflowStore
 from utils.langfuse_tracing import generate_session_id, get_agent_handler
 
@@ -121,10 +122,10 @@ class SupervisorAgent:
     def _build_checkpointer(self):
         if SqliteSaver is None:
             return None
-        data_dir = os.path.join(os.getcwd(), ".sqlite")
-        os.makedirs(data_dir, exist_ok=True)
+        sqlite_dir = os.path.join(os.getcwd(), ".sqlite")
+        os.makedirs(sqlite_dir, exist_ok=True)
         conn = sqlite3.connect(
-            os.path.join(data_dir, "langgraph_checkpoints.db"),
+            os.path.join(sqlite_dir, "langgraph_checkpoints.db"),
             check_same_thread=False,
         )
         return SqliteSaver(conn)
@@ -183,8 +184,6 @@ class SupervisorAgent:
 
     def _react_supervisor_node(self, state: SupervisorState) -> dict[str, Any]:
         """LLM reasons about current workflow state and decides the next step."""
-        from models.llm_client import LLMClient
-
         task           = state.get("task", "monitor_and_analyze")
         failed_count   = len(state.get("failed_jobs", []))
         rca_count      = len(state.get("rca_results", []))
@@ -319,13 +318,8 @@ class SupervisorAgent:
             ],
         }
 
-
     def _rca_evaluator_node(self, state: "SupervisorState") -> dict:
-        """
-        Evaluator-Optimizer graph node — acts as fan-in point after parallel RCA branches.
-        Results are already scored inside each subgraph branch. This node just
-        logs the summary and routes to incident or end.
-        """
+        """Fan-in point after parallel RCA branches — logs scores and routes onward."""
         rca_results = state.get("rca_results", [])
         scored = [r for r in rca_results if r.get("eval_score") is not None]
         log = [
@@ -363,8 +357,7 @@ class SupervisorAgent:
         }
 
     def _fan_out_rca(self, state: SupervisorState):
-        """
-        Option 4 — Parallel RCA using LangGraph Send API.
+        """Dispatch one Send per failed job using the LangGraph Send API (Option 4 — Parallel RCA).
 
         For Groq: caps parallelism via RCA_MAX_PARALLEL (default 2) to stay within TPM limits.
         For Databricks/Ollama: runs all jobs in parallel with no cap.
@@ -598,14 +591,11 @@ class SupervisorAgent:
         lines.append("}")
         return "\n".join(lines)
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # ── Initial state helper ──────────────────────────────────────────────────
 
-    def run_monitoring_workflow(
-        self,
-        task: str = "monitor_and_analyze",
-        session_id: str | None = None,
-    ) -> dict[str, Any]:
-        initial_state: SupervisorState = {
+    def _build_initial_state(self, task: str, session_id: str | None) -> "SupervisorState":
+        """Build the zeroed-out initial state dict for a new workflow run."""
+        return {
             "task":             task,
             "workflow_run_id":  session_id or generate_session_id(prefix="etl_monitoring"),
             "jobs_data":        {},
@@ -622,6 +612,15 @@ class SupervisorAgent:
             "workflow_status":  "queued",
             "error":            "",
         }
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def run_monitoring_workflow(
+        self,
+        task: str = "monitor_and_analyze",
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        initial_state = self._build_initial_state(task, session_id)
         session_id = initial_state["workflow_run_id"]
         try:
             self.workflow_store.start_run(run_id=session_id, task=task)
@@ -682,23 +681,7 @@ class SupervisorAgent:
         The final yield has node="__end__" and contains the complete final state.
         Yields {"node": "__interrupt__", "state": state} when HITL pause is hit.
         """
-        initial_state: SupervisorState = {
-            "task":             task,
-            "workflow_run_id":  session_id or generate_session_id(prefix="etl_monitoring"),
-            "jobs_data":        {},
-            "failed_jobs":      [],
-            "monitor_summary":  "",
-            "rca_results":      [],
-            "rca_eval_pending": [],
-            "rca_eval_done":    [],
-            "rca_current_jobs": [],
-            "incident_results": [],
-            "agent_results":    [],
-            "execution_log":    [],
-            "next_agent":       "",
-            "workflow_status":  "queued",
-            "error":            "",
-        }
+        initial_state = self._build_initial_state(task, session_id)
         session_id = initial_state["workflow_run_id"]
         try:
             self.workflow_store.start_run(run_id=session_id, task=task)

@@ -19,16 +19,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-MODEL_ID = (
-    Config.OLLAMA_MODEL_ID if Config.MODEL_PROVIDER == "ollama" else
-    Config.GROQ_MODEL_ID if Config.MODEL_PROVIDER == "groq" else
-    Config.DATABRICKS_MODEL_ID if Config.MODEL_PROVIDER == "databricks" else
-    "None"
-)
-
 
 def initialize_session_state():
     """Initialize session state variables"""
+    # Initialize all session state keys once on first load
     if 'monitoring_complete' not in st.session_state:
         st.session_state.monitoring_complete = False
     if 'monitoring_requested' not in st.session_state:
@@ -78,7 +72,7 @@ def validate_configuration():
 
 
 def display_header():
-    """Display application header"""
+    """Render the top-of-page header, CSS tweaks, and platform metrics."""
     st.markdown(
         """
         <style>
@@ -109,8 +103,45 @@ def display_header():
             st.metric(label="⏱️ Last Run (UTC)", value="Never")
 
 
+def _render_agent_architecture():
+    """Render the four agent architecture expanders inside the sidebar."""
+    st.subheader("🤖 Agent Architecture")
+    with st.expander("Supervisor Agent", expanded=False):
+        st.write("**Role:** ReAct Workflow Coordinator")
+        st.write("- Orchestrates 4 specialised worker agents")
+        st.write("- Uses LLM reasoning to decide which agent to invoke next")
+        st.write("- Logs reasoning to execution log")
+    with st.expander("Worker 1 — Monitor Agent", expanded=False):
+        st.write("**Role:** Job Status Monitoring")
+        st.write("- Tracks all Databricks job runs via SDK")
+        st.write("- Identifies failed jobs and surfaces error messages")
+    with st.expander("Worker 2 — RCA Fan-Out", expanded=False):
+        st.write("**Role:** Parallel RCA Dispatcher")
+        st.write("- Uses LangGraph Send API to dispatch one RCA per failed job")
+        st.write("- All jobs analysed simultaneously (not sequentially)")
+        st.write("- Results merged via Annotated reducer (Option 3 — Shared Memory)")
+    with st.expander("Worker 3 — RCA Evaluator", expanded=False):
+        st.write("**Role:** Quality Gate (Evaluator-Optimizer)")
+        st.write("- Scores each RCA on Clarity, Actionability, Completeness (1-10)")
+        st.write("- Checks whether DAB context and UC lineage were used correctly")
+        st.write("- Enforces WHAT + WHERE + ACCESS in every fix step")
+        st.write("- Retries below-threshold RCAs with targeted per-criterion feedback")
+    with st.expander("Worker 4 — Incident Agent", expanded=False):
+        st.write("**Role:** Incident Management")
+        st.write("- Pauses for human review before creating any ticket (HITL)")
+        st.write("- Supports per-incident approve/reject, severity override, context note")
+        st.write("- Creates Jira tickets via Atlassian Rovo MCP")
+
+
 def display_sidebar():
-    """Display sidebar with controls"""
+    """Render the sidebar control panel: run mode, ticker controls, agent info, and model info."""
+    model_id = (
+        Config.GROQ_MODEL_ID if Config.MODEL_PROVIDER == "groq" else
+        Config.OLLAMA_MODEL_ID if Config.MODEL_PROVIDER == "ollama" else
+        Config.DATABRICKS_MODEL_ID if Config.MODEL_PROVIDER == "databricks" else
+        "None"
+    )
+
     store = WorkflowStore()
 
     with st.sidebar:
@@ -278,37 +309,12 @@ def display_sidebar():
         st.markdown("---")
 
         # ── Agent architecture ─────────────────────────────────────────────
-        st.subheader("🤖 Agent Architecture")
-        with st.expander("Supervisor Agent", expanded=False):
-            st.write("**Role:** ReAct Workflow Coordinator")
-            st.write("- Orchestrates 4 specialised worker agents")
-            st.write("- Uses LLM reasoning to decide which agent to invoke next")
-            st.write("- Logs reasoning to execution log")
-        with st.expander("Worker 1 — Monitor Agent", expanded=False):
-            st.write("**Role:** Job Status Monitoring")
-            st.write("- Tracks all Databricks job runs via SDK")
-            st.write("- Identifies failed jobs and surfaces error messages")
-        with st.expander("Worker 2 — RCA Fan-Out", expanded=False):
-            st.write("**Role:** Parallel RCA Dispatcher")
-            st.write("- Uses LangGraph Send API to dispatch one RCA per failed job")
-            st.write("- All jobs analysed simultaneously (not sequentially)")
-            st.write("- Results merged via Annotated reducer (Option 3 — Shared Memory)")
-        with st.expander("Worker 3 — RCA Evaluator", expanded=False):
-            st.write("**Role:** Quality Gate (Evaluator-Optimizer)")
-            st.write("- Scores each RCA on Clarity, Actionability, Completeness (1-10)")
-            st.write("- Checks whether DAB context and UC lineage were used correctly")
-            st.write("- Enforces WHAT + WHERE + ACCESS in every fix step")
-            st.write("- Retries below-threshold RCAs with targeted per-criterion feedback")
-        with st.expander("Worker 4 — Incident Agent", expanded=False):
-            st.write("**Role:** Incident Management")
-            st.write("- Pauses for human review before creating any ticket (HITL)")
-            st.write("- Supports per-incident approve/reject, severity override, context note")
-            st.write("- Creates Jira tickets via Atlassian Rovo MCP")
+        _render_agent_architecture()
 
         st.markdown("---")
         st.subheader("ℹ️ Model Info")
         st.text(f"Provider : {Config.MODEL_PROVIDER}")
-        st.text(f"Model ID : {MODEL_ID}")
+        st.text(f"Model ID : {model_id}")
 
         st.markdown("---")
         st.subheader("📊 Observability")
@@ -324,8 +330,26 @@ def display_sidebar():
             st.rerun()
 
 
+def load_ticker_results():
+    """Read the latest ticker result from SQLite and update session state."""
+    store = WorkflowStore()
+    result = store.get_latest_result()
+    if result:
+        saved_at = result.get("_saved_at", "unknown")
+        if st.session_state.results is None or result.get("workflow_run_id") != (
+            st.session_state.results or {}
+        ).get("workflow_run_id"):
+            st.session_state.results = result
+            try:
+                st.session_state.last_run_time = datetime.strptime(
+                    saved_at, "%Y-%m-%d %H:%M:%S"
+                )
+            except Exception:
+                pass
+
+
 def run_monitoring():
-    """Execute the monitoring workflow with live streaming UI updates."""
+    """Execute the monitoring workflow and stream live status updates to the UI."""
     st.session_state.monitoring_running = True
     try:
         st.session_state.last_run_time = datetime.now()
@@ -414,25 +438,8 @@ def run_monitoring():
         st.exception(e)
 
 
-    """Read the latest ticker result from SQLite and update session state."""
-    store = WorkflowStore()
-    result = store.get_latest_result()
-    if result:
-        saved_at = result.get("_saved_at", "unknown")
-        if st.session_state.results is None or result.get("workflow_run_id") != (
-            st.session_state.results or {}
-        ).get("workflow_run_id"):
-            st.session_state.results = result
-            try:
-                st.session_state.last_run_time = datetime.strptime(
-                    saved_at, "%Y-%m-%d %H:%M:%S"
-                )
-            except Exception:
-                pass
-
-
 def display_results():
-    """Display monitoring results"""
+    """Render the full results panel: workflow graph, job metrics, RCA details, and incident review."""
     if not st.session_state.results:
         if st.session_state.mode == "ticker":
             st.info(
@@ -529,7 +536,6 @@ def display_results():
                             st.text(f"Completeness:  {breakdown.get('completeness', 'N/A')}/10")
                         if eval_iters:
                             st.text(f"Iterations:    {eval_iters}")
-                        # Show per-criterion evaluator feedback if not passed
                         if not passed_eval:
                             for fb_key, fb_label in [
                                 ("_eval_clarity_feedback",      "🔤 Clarity feedback"),
@@ -539,8 +545,6 @@ def display_results():
                                 if rca.get(fb_key):
                                     st.caption(f"**{fb_label}:** {rca[fb_key]}")
                 with col2:
-                    # Always show the full LLM response — it contains all sections
-                    # including root cause, downstream impact, recommended fix, severity
                     full = rca.get("_full_response") or rca.get("root_cause", "")
                     st.write(full)
 

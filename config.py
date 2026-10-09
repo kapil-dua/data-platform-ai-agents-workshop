@@ -13,7 +13,8 @@ class Config:
 
     # Application settings
     REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", "30"))
-    
+
+    # ── LLM Provider Settings ─────────────────────────────────────────────
     # Agent settings
 
     MODEL_PROVIDER = os.getenv("MODEL_PROVIDER", "")
@@ -23,13 +24,15 @@ class Config:
     # Groq API settings
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
     GROQ_MODEL_ID = os.getenv("GROQ_MODEL_ID", "")
-    
+
+    # ── Databricks Settings ───────────────────────────────────────────────
     # Databricks API settings
     DATABRICKS_WORKSPACE_HOST = os.getenv("DATABRICKS_WORKSPACE_HOST", "")
     DATABRICKS_TOKEN = os.getenv("DATABRICKS_TOKEN", "")
     DATABRICKS_AI_GATEWAY = os.getenv("DATABRICKS_AI_GATEWAY", "")
     DATABRICKS_MODEL_ID = os.getenv("DATABRICKS_MODEL_ID", "")
 
+    # ── Jira / Atlassian Settings ─────────────────────────────────────────
     JIRA_ENABLED = os.getenv("JIRA_ENABLED", "false").lower() == "true"
     # Atlassian Rovo MCP settings
     ATLASSIAN_MCP_URL = os.getenv("ATLASSIAN_MCP_URL", "https://mcp.atlassian.com/v2/mcp")
@@ -39,7 +42,8 @@ class Config:
     ATLASSIAN_CLOUD_ID = os.getenv("ATLASSIAN_CLOUD_ID", "nagarro-dataai-1.atlassian.net")
     ATLASSIAN_PROJECT_KEY = os.getenv("ATLASSIAN_PROJECT_KEY", "")
     ATLASSIAN_ISSUE_TYPE = os.getenv("ATLASSIAN_ISSUE_TYPE", os.getenv("JIRA_ISSUE_TYPE", "Task"))
-    
+
+    # ── Langfuse Observability Settings ──────────────────────────────────
     # Langfuse Observability settings
     LANGFUSE_ENABLED = os.getenv("LANGFUSE_ENABLED", "true").lower() == "true"
     LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
@@ -48,7 +52,7 @@ class Config:
     LANGFUSE_BATCH_SIZE = int(os.getenv("LANGFUSE_BATCH_SIZE", "100"))
     LANGFUSE_FLUSH_INTERVAL = int(os.getenv("LANGFUSE_FLUSH_INTERVAL", "10"))
 
-    # ── Prompts (centralized here, loaded by agents via Config) ──────────────
+    # ── Agent Prompts (edit here or manage via Langfuse) ─────────────────
 
     ## ── ReAct supervisor prompts ─────────────────────────────────────────────
 

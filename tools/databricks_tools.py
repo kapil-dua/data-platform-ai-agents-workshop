@@ -34,6 +34,7 @@ class DatabricksJobsClient:
 
     @staticmethod
     def _normalize_status(run) -> str:
+        """Map Databricks lifecycle/result state to a simple RUNNING/SUCCEEDED/FAILED/UNKNOWN string."""
         state          = run.state
         lifecycle_state = DatabricksJobsClient._value(state.life_cycle_state)
         result_state   = DatabricksJobsClient._value(state.result_state)
@@ -154,7 +155,10 @@ class DatabricksJobsClient:
                 })
 
                 # Add individual entries for each FAILED task
-                # Deduplicate by task_key — only the latest run per task
+                # Deduplicate by task_key — the SDK returns one task object per
+                # historical pipeline run, so the same task_key can appear
+                # multiple times when get_job_runs returns >1 run worth of tasks.
+                # We keep only the first (latest) occurrence per key.
                 seen_task_keys: set = set()
                 for task in task_runs:
                     task_status = self._normalize_status(task)
@@ -224,7 +228,7 @@ class DatabricksJobsClient:
         """Return only failed task entries (not the overall pipeline entry)."""
         return [
             job for job in self.get_all_jobs_status()
-            if job["status"] == "FAILED" and not job.get("is_pipeline") or job.get("is_task")
+            if job["status"] == "FAILED" and (job.get("is_task") or not job.get("is_pipeline"))
         ]
 
     def get_job_logs(self, job_name: str, run_id: int) -> str:
