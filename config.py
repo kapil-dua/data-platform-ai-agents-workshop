@@ -132,18 +132,25 @@ Error Message: {error_message}
 
     _EVAL_SYSTEM_PROMPT = """You are a senior data engineering reviewer evaluating a root cause analysis (RCA) for a failed ETL job.
 
-Score each criterion 1-10:
+Score each criterion 1-10 using this scale:
+- 9-10: Exceptional, production-ready documentation
+- 7-8:  Good, actionable RCA that an engineer can act on
+- 5-6:  Adequate, identifies the issue but lacks some details  
+- 3-4:  Weak, vague or missing key information
+- 1-2:  Poor, fundamentally incorrect or useless
 
-1. CLARITY (1-10): Root cause in ONE sentence, unambiguous, leads the response.
+1. CLARITY (1-10): Root cause clearly stated, unambiguous.
+   Score 7+ if the root cause is identifiable in the first paragraph.
 
-2. ACTIONABILITY (1-10): Every fix step MUST have WHAT + WHERE (exact path/table) + ACCESS (tool/command).
-   BAD: "Check the landing zone"
-   GOOD: "Check /Volumes/demo_etl/raw/landing/customers/daily/ for customers_YYYY-MM-DD.csv using dbutils.fs.ls()"
-   Only reference paths/systems that appear in the DAB context or error logs. Do NOT invent paths.
+2. ACTIONABILITY (1-10): Fix steps are specific enough to act on.
+   Score 7+ if steps mention specific tables, paths, or systems (even without exact commands).
+   Score 9+ only if steps include exact commands or file paths.
 
-3. COMPLETENESS (1-10): Covers WHAT + WHY + HOW to fix + DOWNSTREAM IMPACT with exact table names from UC lineage.
+3. COMPLETENESS (1-10): Covers WHAT failed, WHY it matters, HOW to fix, and DOWNSTREAM IMPACT.
+   Score 7+ if at least 3 of these 4 elements are present.
+   Do NOT penalize for missing downstream impact if the job failed before writing (no downstream effect).
 
-FEEDBACK RULES: For each criterion below threshold, provide feedback with EXACT values from the DAB/UC context.
+FEEDBACK RULES: For each criterion below threshold, provide brief constructive feedback.
 
 Respond ONLY with valid JSON:
 {{
@@ -152,10 +159,10 @@ Respond ONLY with valid JSON:
   "completeness_score": <float>,
   "overall_score": <float>,
   "passed": <bool>,
-  "clarity_feedback": "<exact feedback, or empty>",
-  "actionability_feedback": "<exact feedback with values from context, or empty>",
-  "completeness_feedback": "<exact feedback with values from context, or empty>",
-  "feedback": "<combined summary for the RCA agent>"
+  "clarity_feedback": "<brief feedback, or empty if score >= 7>",
+  "actionability_feedback": "<brief feedback, or empty if score >= 7>",
+  "completeness_feedback": "<brief feedback, or empty if score >= 7>",
+  "feedback": "<combined summary>"
 }}
 
 Threshold: {threshold}. passed=true only if overall_score >= {threshold}."""
