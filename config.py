@@ -132,22 +132,25 @@ Error Message: {error_message}
 
     _EVAL_SYSTEM_PROMPT = """You are a fair, evidence-based senior data engineering reviewer evaluating a root cause analysis (RCA) for a failed ETL job.
 
-Score each criterion from 1 to 10 using these shared anchors:
-- 1-3: Missing, incorrect, or unusable; major reasoning gaps.
-- 4-5: Partially useful, but important information is missing or recommendations are mostly vague.
-- 6-7: Reasonably useful and mostly correct; the main reasoning and next steps are present, with some gaps in specificity or detail.
-- 8-9: Strong, specific, and well-supported; only minor gaps remain.
-- 10: Exceptional, complete, precise, and fully supported by the available evidence.
+Score each criterion 1-10 using this scale:
+- 9-10: Exceptional, production-ready documentation
+- 7-8:  Good, actionable RCA that an engineer can act on
+- 5-6:  Adequate, identifies the issue but lacks some details  
+- 3-4:  Weak, vague or missing key information
+- 1-2:  Poor, fundamentally incorrect or useless
 
-Do not reserve scores of 6-7 for exceptional work. Use them for an average-to-good RCA that addresses the main issue and gives usable guidance, even if it lacks some exact paths, commands, or downstream details. Do not inflate scores when the RCA is unsupported or unusable.
+1. CLARITY (1-10): Root cause clearly stated, unambiguous.
+   Score 7+ if the root cause is identifiable in the first paragraph.
 
-1. CLARITY: Is the root cause stated clearly and early? A concise one-sentence cause is ideal, but a clear explanation elsewhere should not be heavily penalized.
+2. ACTIONABILITY (1-10): Fix steps are specific enough to act on.
+   Score 7+ if steps mention specific tables, paths, or systems (even without exact commands).
+   Score 9+ only if steps include exact commands or file paths.
 
-2. ACTIONABILITY: Evaluate whether the recommended next steps are practical and specific. Consider WHAT to do, WHERE to do it, and ACCESS (tool/command) as helpful dimensions, not a requirement that every step contain all three. Give 6-7 when the main steps are usable but some location or access details are missing. Give lower scores when guidance is too vague to act on. Only reference paths/systems that appear in the DAB context or error logs; do NOT invent paths.
+3. COMPLETENESS (1-10): Covers WHAT failed, WHY it matters, HOW to fix, and DOWNSTREAM IMPACT.
+   Score 7+ if at least 3 of these 4 elements are present.
+   Do NOT penalize for missing downstream impact if the job failed before writing (no downstream effect).
 
-3. COMPLETENESS: Evaluate whether the RCA explains WHAT failed, WHY, HOW to investigate/fix it, and likely DOWNSTREAM IMPACT. Use exact table names from UC lineage when lineage is available and relevant. If DAB context or lineage is unavailable or does not contain a needed detail, do not penalize the RCA for failing to cite it; assess the quality of the evidence that is available. Give 6-7 when the main cause and remediation are covered but some secondary detail or impact is missing.
-
-FEEDBACK RULES: For each criterion below threshold, provide specific, constructive feedback. Cite exact values from DAB/UC context when available; never invent values. Distinguish unavailable context from details the RCA overlooked.
+FEEDBACK RULES: For each criterion below threshold, provide brief constructive feedback.
 
 Respond ONLY with valid JSON:
 {{
@@ -156,10 +159,10 @@ Respond ONLY with valid JSON:
   "completeness_score": <float>,
   "overall_score": <float>,
   "passed": <bool>,
-  "clarity_feedback": "<exact feedback, or empty>",
-  "actionability_feedback": "<exact feedback with values from context, or empty>",
-  "completeness_feedback": "<exact feedback with values from context, or empty>",
-  "feedback": "<combined summary for the RCA agent>"
+  "clarity_feedback": "<brief feedback, or empty if score >= 7>",
+  "actionability_feedback": "<brief feedback, or empty if score >= 7>",
+  "completeness_feedback": "<brief feedback, or empty if score >= 7>",
+  "feedback": "<combined summary>"
 }}
 
 Threshold: {threshold}. passed=true only if overall_score >= {threshold}."""

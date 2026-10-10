@@ -10,125 +10,124 @@ variables:
 
 resources:
   jobs:
+    etl_raw_to_cleansed_customers:
+      name: etl_raw_to_cleansed_customers
+      description: "Reads daily CRM customer export CSV from UC Volume. Fails if today's file not yet delivered."
+      schedule:
+        quartz_cron_expression: "0 0 2 * * ?"
+        timezone_id: UTC
+        pause_status: PAUSED
+      tasks:
+        - task_key: main
+          notebook_task:
+            notebook_path: /Shared/demo_etl/etl_raw_to_cleansed_customers
+            base_parameters:
+            source_path: "/Volumes/demo_etl/raw/landing/customers/daily/"
+            source_table: "demo_etl.raw.customers_raw"
+            target_table: "demo_etl.cleansed.customers"
+            filename_pattern: "customers_YYYY-MM-DD.csv"
+            FORCE_SUCCESS: "false"
+      tags:
+        layer: "raw_to_cleansed"
+        upstream_system: "CRM system nightly batch export (02:00 UTC)"
+        source_table: "demo_etl.raw.customers_raw"
+        target_table: "demo_etl.cleansed.customers"
+        target_schema: "demo_etl.cleansed"
+        sla: "03:00 UTC"
 
-etl_raw_to_cleansed_customers:
-  name: etl_raw_to_cleansed_customers
-  description: "Reads daily CRM customer export CSV from UC Volume. Fails if today's file not yet delivered."
-  schedule:
-    quartz_cron_expression: "0 0 2 * * ?"
-    timezone_id: UTC
-    pause_status: PAUSED
-  tasks:
-    - task_key: main
-      notebook_task:
-        notebook_path: /Shared/demo_etl/etl_raw_to_cleansed_customers
-        base_parameters:
-          source_path: "/Volumes/demo_etl/raw/landing/customers/daily/"
-          source_table: "demo_etl.raw.customers_raw"
-          target_table: "demo_etl.cleansed.customers"
-          filename_pattern: "customers_YYYY-MM-DD.csv"
-          FORCE_SUCCESS: "false"
-  tags:
-    layer:            "raw_to_cleansed"
-    upstream_system:  "CRM system nightly batch export (02:00 UTC)"
-    source_table:     "demo_etl.raw.customers_raw"
-    target_table:     "demo_etl.cleansed.customers"
-    target_schema:    "demo_etl.cleansed"
-    sla:              "03:00 UTC"
+    etl_raw_to_cleansed_inventory:
+      name: etl_raw_to_cleansed_inventory
+      description: "Reads daily inventory CSV from UC Volume landing zone, validates and writes to cleansed.inventory_daily."
+      schedule:
+        quartz_cron_expression: "0 0 2 * * ?"
+        timezone_id: UTC
+        pause_status: PAUSED
+      tasks:
+        - task_key: main
+          notebook_task:
+            notebook_path: /Shared/demo_etl/etl_raw_to_cleansed_inventory
+            base_parameters:
+            source_path: "/Volumes/demo_etl/raw/landing/inventory/daily/"
+            target_table: "demo_etl.cleansed.inventory_daily"
+            filename_pattern: "inventory_YYYY-MM-DD.csv"
+            archive_path: "/Volumes/demo_etl/raw/landing/inventory/archive/"
+      tags:
+        layer: "raw_to_cleansed"
+        upstream_system: "Warehouse Management System (WMS) — SFTP drop at 01:00 UTC"
+        source_table: "demo_etl.raw.inventory_raw"
+        target_table: "demo_etl.cleansed.inventory_daily"
+        target_schema: "demo_etl.cleansed"
+        sla: "02:00 UTC"
 
-etl_raw_to_cleansed_inventory:
-  name: etl_raw_to_cleansed_inventory
-  description: "Reads daily inventory CSV from DBFS, validates and writes to cleansed.inventory_daily."
-  schedule:
-    quartz_cron_expression: "0 0 2 * * ?"
-    timezone_id: UTC
-    pause_status: PAUSED
-  tasks:
-    - task_key: main
-      notebook_task:
-        notebook_path: /Shared/demo_etl/etl_raw_to_cleansed_inventory
-        base_parameters:
-          source_path: "/Volumes/demo_etl/raw/landing/inventory/daily/"
-          target_table: "demo_etl.cleansed.inventory_daily"
-          filename_pattern: "inventory_YYYY-MM-DD.csv"
-          archive_path: "/Volumes/demo_etl/raw/landing/inventory/archive/"
-  tags:
-    layer:            "raw_to_cleansed"
-    upstream_system:  "Warehouse Management System (WMS) — SFTP drop at 01:00 UTC"
-    source_table:     "demo_etl.raw.inventory_raw"
-    target_table:     "demo_etl.cleansed.inventory_daily"
-    target_schema:    "demo_etl.cleansed"
-    sla:              "02:00 UTC"
+    etl_raw_to_cleansed_sales:
+      name: etl_raw_to_cleansed_sales
+      description: "Reads raw sales transactions, applies business rules, writes to cleansed.sales_transactions."
+      schedule:
+        quartz_cron_expression: "0 0 2 * * ?"
+        timezone_id: UTC
+        pause_status: PAUSED
+      tasks:
+        - task_key: main
+          notebook_task:
+            notebook_path: /Shared/demo_etl/etl_raw_to_cleansed_sales
+            base_parameters:
+            source_table: "demo_etl.raw.sales_raw"
+            target_table: "demo_etl.cleansed.sales_transactions"
+            target_schema: "demo_etl.cleansed"
+      tags:
+        layer: "raw_to_cleansed"
+        upstream_system: "POS system (real-time CDC via Kafka → Delta)"
+        source_table: "demo_etl.raw.sales_raw"
+        target_table: "demo_etl.cleansed.sales_transactions"
+        target_schema: "demo_etl.cleansed"
+        sla: "04:00 UTC"
 
-etl_raw_to_cleansed_sales:
-  name: etl_raw_to_cleansed_sales
-  description: "Reads raw sales transactions, applies business rules, writes to cleansed.sales_transactions."
-  schedule:
-    quartz_cron_expression: "0 0 2 * * ?"
-    timezone_id: UTC
-    pause_status: PAUSED
-  tasks:
-    - task_key: main
-      notebook_task:
-        notebook_path: /Shared/demo_etl/etl_raw_to_cleansed_sales
-        base_parameters:
-          source_table: "demo_etl.raw.sales_raw"
-          target_table: "demo_etl.cleansed.sales_transactions"
-          target_schema: "demo_etl.cleansed"
-  tags:
-    layer:            "raw_to_cleansed"
-    upstream_system:  "POS system (real-time CDC via Kafka → Delta)"
-    source_table:     "demo_etl.raw.sales_raw"
-    target_table:     "demo_etl.cleansed.sales_transactions"
-    target_schema:    "demo_etl.cleansed"
-    sla:              "04:00 UTC"
+    etl_cleansed_to_conformed_revenue:
+      name: etl_cleansed_to_conformed_revenue
+      description: "Aggregates cleansed revenue by region/product into conformed fact table. Fails when cleansed schema has unexpected columns."
+      schedule:
+        quartz_cron_expression: "0 0 2 * * ?"
+        timezone_id: UTC
+        pause_status: PAUSED
+      tasks:
+        - task_key: main
+          notebook_task:
+            notebook_path: /Shared/demo_etl/etl_cleansed_to_conformed_revenue
+            base_parameters:
+            source_table: "demo_etl.cleansed.revenue_export"
+            target_table: "demo_etl.conformed.fact_revenue_daily"
+            expected_schema: "revenue_id,region,product_line,gross_revenue,net_revenue,export_date"
+            FORCE_SUCCESS: "false"
+      tags:
+        layer: "cleansed_to_conformed"
+        upstream_system: "Finance system revenue export (cleansed by etl_raw_to_cleansed_sales)"
+        source_table: "demo_etl.cleansed.revenue_export"
+        target_table: "demo_etl.conformed.fact_revenue_daily"
+        target_schema: "demo_etl.conformed"
+        sla: "05:00 UTC"
 
-etl_cleansed_to_conformed_revenue:
-  name: etl_cleansed_to_conformed_revenue
-  description: "Aggregates cleansed revenue by region/product into conformed fact table. Fails when cleansed schema has unexpected columns."
-  schedule:
-    quartz_cron_expression: "0 0 2 * * ?"
-    timezone_id: UTC
-    pause_status: PAUSED
-  tasks:
-    - task_key: main
-      notebook_task:
-        notebook_path: /Shared/demo_etl/etl_cleansed_to_conformed_revenue
-        base_parameters:
-          source_table: "demo_etl.cleansed.revenue_export"
-          target_table: "demo_etl.conformed.fact_revenue_daily"
-          expected_schema: "revenue_id,region,product_line,gross_revenue,net_revenue,export_date"
-          FORCE_SUCCESS: "false"
-  tags:
-    layer:            "cleansed_to_conformed"
-    upstream_system:  "Finance system revenue export (cleansed by etl_raw_to_cleansed_sales)"
-    source_table:     "demo_etl.cleansed.revenue_export"
-    target_table:     "demo_etl.conformed.fact_revenue_daily"
-    target_schema:    "demo_etl.conformed"
-    sla:              "05:00 UTC"
-
-etl_cleansed_to_conformed_inventory:
-  name: etl_cleansed_to_conformed_inventory
-  description: "Aggregates cleansed inventory by warehouse and date. Enforces warehouse_id not null as grain key for conformed fact table."
-  schedule:
-    quartz_cron_expression: "0 0 2 * * ?"
-    timezone_id: UTC
-    pause_status: PAUSED
-  tasks:
-    - task_key: main
-      notebook_task:
-        notebook_path: /Shared/demo_etl/etl_cleansed_to_conformed_inventory
-        base_parameters:
-          source_table: "demo_etl.cleansed.inventory_daily"
-          target_table: "demo_etl.conformed.fact_inventory_summary"
-          required_key: "warehouse_id"
-          aggregation: "daily_by_warehouse"
-          FORCE_SUCCESS: "false"
-  tags:
-    layer:            "cleansed_to_conformed"
-    upstream_system:  "cleansed.inventory_daily (written by etl_raw_to_cleansed_inventory)"
-    source_table:     "demo_etl.cleansed.inventory_daily"
-    target_table:     "demo_etl.conformed.fact_inventory_summary"
-    target_schema:    "demo_etl.conformed"
-    sla:              "06:00 UTC"
+    etl_cleansed_to_conformed_inventory:
+      name: etl_cleansed_to_conformed_inventory
+      description: "Aggregates cleansed inventory by warehouse and date. Enforces warehouse_id not null as grain key for conformed fact table."
+      schedule:
+        quartz_cron_expression: "0 0 2 * * ?"
+        timezone_id: UTC
+        pause_status: PAUSED
+      tasks:
+        - task_key: main
+          notebook_task:
+            notebook_path: /Shared/demo_etl/etl_cleansed_to_conformed_inventory
+            base_parameters:
+            source_table: "demo_etl.cleansed.inventory_daily"
+            target_table: "demo_etl.conformed.fact_inventory_summary"
+            required_key: "warehouse_id"
+            aggregation: "daily_by_warehouse"
+            FORCE_SUCCESS: "false"
+      tags:
+        layer: "cleansed_to_conformed"
+        upstream_system: "cleansed.inventory_daily (written by etl_raw_to_cleansed_inventory)"
+        source_table: "demo_etl.cleansed.inventory_daily"
+        target_table: "demo_etl.conformed.fact_inventory_summary"
+        target_schema: "demo_etl.conformed"
+        sla: "06:00 UTC"
 

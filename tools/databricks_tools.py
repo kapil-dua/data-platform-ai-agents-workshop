@@ -3,10 +3,16 @@
 Multi-task pipeline aware: when a pipeline job has multiple tasks, failed
 tasks are surfaced individually so the RCA agent analyses each one separately.
 """
+import re
 from typing import Any, Dict, List
 
 from databricks.sdk import WorkspaceClient
 from config import Config
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape codes from text (terminal colors in Databricks tracebacks)."""
+    return re.sub(r'\x1b\[[0-9;]*m', '', text) if text else text
 
 
 class DatabricksJobsClient:
@@ -110,6 +116,7 @@ class DatabricksJobsClient:
                             or state_msg
                         )
                         if raw_err:
+                            raw_err = _strip_ansi(raw_err)
                             first_line = [l.strip() for l in raw_err.split("\n") if l.strip()]
                             actual_error = first_line[0] if first_line else raw_err
                     except Exception:
@@ -198,6 +205,7 @@ class DatabricksJobsClient:
                             )
                             # Trim to first meaningful line for the summary
                             if actual_error:
+                                actual_error = _strip_ansi(actual_error)
                                 first_line = [l.strip() for l in actual_error.split("\n") if l.strip()]
                                 actual_error = first_line[0] if first_line else actual_error
                         except Exception:

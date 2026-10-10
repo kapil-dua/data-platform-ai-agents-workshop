@@ -95,7 +95,7 @@ JOBS = [
         "archive_path":    f"/Volumes/{CATALOG}/{SCHEMA_RAW}/landing/inventory/archive/",
         "filename_pattern":"inventory_YYYY-MM-DD.csv",
         "sla":             "02:00 UTC",
-        "description":     "Reads daily inventory CSV from DBFS, validates and writes to cleansed.inventory_daily.",
+        "description":     "Reads daily inventory CSV from UC Volume landing zone, validates and writes to cleansed.inventory_daily.",
         "parameters": {
             "source_path":     f"/Volumes/{CATALOG}/{SCHEMA_RAW}/landing/inventory/daily/",
             "target_table":    f"{CATALOG}.{SCHEMA_CL}.inventory_daily",
@@ -384,19 +384,19 @@ df = spark.table(SOURCE_TABLE)
 total = df.count()
 print(f"Total records: {{total:,}}")
 
-null_count = df.filter(F.col(REQUIRED_KEY).isNull()).count()
+null_count = df.filter(F.col(REQUIRED_KEY).isNull() | (F.col(REQUIRED_KEY) == "")).count()
 null_pct = round(null_count / total * 100, 1) if total > 0 else 0
-print(f"Null {{REQUIRED_KEY}}: {{null_count}} ({{null_pct}}%)")
+print(f"Null/empty {{REQUIRED_KEY}}: {{null_count}} ({{null_pct}}%)")
 
 if not FORCE_SUCCESS and null_count > 0:
     raise Exception(
         f"DataQualityException: {{null_count}} records ({{null_pct}}%) in {{SOURCE_TABLE}} "
-        f"have null {{REQUIRED_KEY}}. Required as grain key for {{TARGET_TABLE}}. "
+        f"have null/empty {{REQUIRED_KEY}}. Required as grain key for {{TARGET_TABLE}}. "
         f"Null grain key causes incorrect aggregations and duplicate rows. "
         f"Aborting to protect data integrity of {{TARGET_TABLE}}."
     )
 
-df_agg = df.filter(F.col(REQUIRED_KEY).isNotNull()) \\
+df_agg = df.filter(F.col(REQUIRED_KEY).isNotNull() & (F.col(REQUIRED_KEY) != "")) \\
     .groupBy("warehouse_id", "load_date") \\
     .agg(
         F.sum("quantity").alias("total_quantity"),
@@ -498,6 +498,19 @@ RAW_SEED_DML = [
         CURRENT_DATE()                                                AS load_date
     FROM (SELECT EXPLODE(SEQUENCE(1, 1000)) AS id)""",
 
+    # inventory_raw — ~5% rows with null warehouse_id
+    # These flow through etl_raw_to_cleansed_inventory into cleansed.inventory_daily
+    # and trigger the DataQualityException in etl_cleansed_to_conformed_inventory
+    f"""INSERT INTO {CATALOG}.{SCHEMA_RAW}.inventory_raw
+    SELECT
+        CONCAT('INV-NULL-', LPAD(CAST(id AS STRING), 4, '0'))        AS inventory_id,
+        NULL                                                           AS warehouse_id,
+        CONCAT('SKU-', LPAD(CAST((id % 200) + 1 AS STRING), 4,'0'))  AS sku,
+        CAST(id * 5 AS BIGINT)                                         AS quantity,
+        ROUND(CAST(id * 1.5 AS DOUBLE), 2)                            AS unit_value,
+        CURRENT_DATE()                                                 AS load_date
+    FROM (SELECT EXPLODE(SEQUENCE(1, 50)) AS id)""",
+
     # sales_raw — 2000 rows
     f"""INSERT INTO {CATALOG}.{SCHEMA_RAW}.sales_raw
     SELECT
@@ -525,30 +538,8 @@ RAW_SEED_DML = [
         CASE WHEN id % 3 = 0 THEN 'GBP' WHEN id % 3 = 1 THEN 'EUR' ELSE 'EUR' END AS currency
     FROM (SELECT EXPLODE(SEQUENCE(1, 300)) AS id)""",
 
-    # inventory_daily (cleansed layer) — 500 rows + some with null warehouse_id
-    # The null warehouse_id rows will trigger the DataQualityException in conformed job
-    f"""INSERT INTO {CATALOG}.{SCHEMA_CL}.inventory_daily
-    SELECT
-        CONCAT('INV-', LPAD(CAST(id AS STRING), 6, '0'))            AS inventory_id,
-        CONCAT('WH-', CAST((id % 5) + 1 AS STRING))                 AS warehouse_id,
-        CONCAT('SKU-', LPAD(CAST((id % 200) + 1 AS STRING),4,'0'))  AS sku,
-        CAST(id * 3 + 10 AS BIGINT)                                  AS quantity,
-        ROUND(CAST(id * 0.75 + 5.0 AS DOUBLE), 2)                   AS unit_value,
-        CURRENT_DATE()                                                AS load_date,
-        CURRENT_TIMESTAMP()                                           AS _ingested_at
-    FROM (SELECT EXPLODE(SEQUENCE(1, 500)) AS id)""",
-
-    # Insert ~5% rows with null warehouse_id to trigger DataQualityException
-    f"""INSERT INTO {CATALOG}.{SCHEMA_CL}.inventory_daily
-    SELECT
-        CONCAT('INV-NULL-', LPAD(CAST(id AS STRING), 4, '0'))        AS inventory_id,
-        NULL                                                           AS warehouse_id,
-        CONCAT('SKU-', LPAD(CAST((id % 200) + 1 AS STRING),4,'0'))   AS sku,
-        CAST(id * 5 AS BIGINT)                                         AS quantity,
-        ROUND(CAST(id * 1.5 AS DOUBLE), 2)                            AS unit_value,
-        CURRENT_DATE()                                                 AS load_date,
-        CURRENT_TIMESTAMP()                                            AS _ingested_at
-    FROM (SELECT EXPLODE(SEQUENCE(1, 25)) AS id)""",
+    # inventory_daily is written by etl_raw_to_cleansed_inventory job (not seeded here)
+    # The null warehouse_id records come from inventory_raw and flow through the cleansed job
 ]
 
 
@@ -560,10 +551,11 @@ def _dab_bundle_yaml() -> str:
     jobs_block = ""
     for job in JOBS:
         params_lines = "\n".join(
-            f"              {k}: \"{v}\""
+            f"            {k}: \"{v}\""
             for k, v in job.get("parameters", {}).items()
         )
-        jobs_block += textwrap.dedent(f"""
+        # Each job is indented 4 spaces (under resources.jobs)
+        jobs_block += f"""
     {job['name']}:
       name: {job['name']}
       description: "{job['description']}"
@@ -578,16 +570,15 @@ def _dab_bundle_yaml() -> str:
             base_parameters:
 {params_lines}
       tags:
-        layer:            "{job['layer']}"
-        upstream_system:  "{job.get('upstream_system', '')}"
-        source_table:     "{job.get('source_table', '')}"
-        target_table:     "{job.get('target_table', '')}"
-        target_schema:    "{job.get('target_schema', '')}"
-        sla:              "{job.get('sla', '')}"
-""")
+        layer: "{job['layer']}"
+        upstream_system: "{job.get('upstream_system', '')}"
+        source_table: "{job.get('source_table', '')}"
+        target_table: "{job.get('target_table', '')}"
+        target_schema: "{job.get('target_schema', '')}"
+        sla: "{job.get('sla', '')}"
+"""
 
-    return textwrap.dedent(f"""\
-# Databricks Asset Bundle — generated by scripts/databricks_setup.py
+    return f"""# Databricks Asset Bundle — generated by scripts/databricks_setup.py
 # One file, all medallion jobs. Deploy with: databricks bundle deploy
 
 bundle:
@@ -598,9 +589,8 @@ variables:
     default: {CATALOG}
 
 resources:
-  jobs:
-{jobs_block}
-""")
+  jobs:{jobs_block}
+"""
 
 
 # Per-task context map — used by DABContextLoader and RCA agent
@@ -717,7 +707,7 @@ def main() -> None:
         f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA_RAW}  COMMENT 'Raw ingestion layer'",
         f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA_CL}   COMMENT 'Cleansed / validated layer'",
         f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA_CF}   COMMENT 'Conformed / business-ready layer'",
-        f"CREATE VOLUME IF NOT EXISTS {CATALOG}.{SCHEMA_RAW}.landing COMMENT 'Landing zone for raw file drops (replaces DBFS)'",
+        f"CREATE VOLUME IF NOT EXISTS {CATALOG}.{SCHEMA_RAW}.landing COMMENT 'Landing zone for raw file drops — customers and inventory CSVs'",
     ]:
         _sql_exec(client, stmt)
         obj = stmt.split("IF NOT EXISTS")[1].strip().split()[0]
@@ -754,61 +744,6 @@ def main() -> None:
         if "INSERT INTO" in dml:
             target = dml.split("INSERT INTO")[1].strip().split()[0]
             print(f"  ✅ {target} — seeded")
-
-    # ── Step 3.5: Seed DBFS files ──────────────────────────────────────────
-    print("\n━" * 65)
-    print("Step 3.5 — Seeding DBFS sample files (inventory CSV, revenue CSV)")
-    print("━" * 65)
-
-    # Upload and run a quick setup notebook that writes CSVs to DBFS
-    dbfs_setup_nb = f"{NOTEBOOK_BASE}/_dbfs_setup"
-    dbfs_setup_code = textwrap.dedent(f"""\
-# Databricks notebook source
-# Setup: write sample CSV files to DBFS for workshop demo
-
-from datetime import datetime, timedelta, timezone
-
-yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
-
-# ── Inventory CSV (yesterday's file — for etl_raw_to_cleansed_inventory to succeed)
-dbutils.fs.mkdirs("dbfs:/demo_etl/inventory/daily")
-dbutils.fs.mkdirs("dbfs:/demo_etl/inventory/archive")
-dbutils.fs.mkdirs("dbfs:/demo_etl/finance/revenue")
-
-inventory_rows = "inventory_id,warehouse_id,sku,quantity,unit_value,load_date\\n"
-inventory_rows += "\\n".join(
-    f"INV-{{i:06d}},WH-{{(i%5)+1}},SKU-{{(i%200)+1:04d}},{{i*3+10}},{{round(i*0.75+5,2)}},{{yesterday}}"
-    for i in range(1, 201)
-)
-dbutils.fs.put(f"dbfs:/demo_etl/inventory/daily/inventory_{{yesterday}}.csv", inventory_rows, overwrite=True)
-print(f"Written: dbfs:/demo_etl/inventory/daily/inventory_{{yesterday}}.csv (200 rows)")
-
-# ── Revenue CSV (YYYYMMDD format — causes etl_cleansed_to_conformed_revenue to fail)
-today_nodash = datetime.now(timezone.utc).strftime("%Y%m%d")
-revenue_rows = "revenue_id,region,product_line,gross_revenue,net_revenue,export_date\\n"
-revenue_rows += "\\n".join(
-    f"REV-{{i:05d}},{{['UK','DE','SI','AT'][i%4]}},{{['Bus','Rail','Coach'][i%3]}},{{i*150.0+500}},{{i*120.0+400}},{{datetime.now(timezone.utc).strftime('%Y-%m-%d')}}"
-    for i in range(1, 51)
-)
-dbutils.fs.put(f"dbfs:/demo_etl/finance/revenue/revenue_export_{{today_nodash}}.csv", revenue_rows, overwrite=True)
-print(f"Written: dbfs:/demo_etl/finance/revenue/revenue_export_{{today_nodash}}.csv (50 rows, YYYYMMDD format)")
-print("DBFS setup complete.")
-""")
-    _upload_notebook(client, dbfs_setup_nb, dbfs_setup_code)
-    dbfs_job_id = None
-    for existing in list(client.jobs.list(name="_dbfs_setup")):
-        client.jobs.delete(job_id=existing.job_id)
-    dbfs_job = client.jobs.create(
-        name="_dbfs_setup",
-        tasks=[jobs_sdk.Task(
-            task_key="main",
-            notebook_task=jobs_sdk.NotebookTask(notebook_path=dbfs_setup_nb),
-        )],
-    )
-    dbfs_run = client.jobs.run_now(job_id=dbfs_job.job_id)
-    _wait_for_run(client, dbfs_run.run_id, "_dbfs_setup")
-    client.jobs.delete(job_id=dbfs_job.job_id)  # cleanup helper job
-    print("  ✅ DBFS files seeded")
 
     # ── Step 3.5: Seed Volume files ───────────────────────────────────────
     print("\n━" * 65)
@@ -851,8 +786,14 @@ inventory_rows += "\\n".join(
     f"INV-{{i:06d}},WH-{{(i%5)+1}},SKU-{{(i%200)+1:04d}},{{i*3+10}},{{round(i*0.75+5,2)}},{{yesterday}}"
     for i in range(1, 301)
 )
+# Add ~5% rows with empty warehouse_id — these trigger DataQualityException
+# in etl_cleansed_to_conformed_inventory (null grain key check)
+inventory_rows += "\\n" + "\\n".join(
+    f"INV-NULL-{{i:04d}},,SKU-{{(i%200)+1:04d}},{{i*5}},{{round(i*1.5,2)}},{{yesterday}}"
+    for i in range(1, 16)
+)
 dbutils.fs.put(f"{{base}}/inventory/daily/inventory_{{yesterday}}.csv", inventory_rows, overwrite=True)
-print(f"Written: {{base}}/inventory/daily/inventory_{{yesterday}}.csv (300 rows)")
+print(f"Written: {{base}}/inventory/daily/inventory_{{yesterday}}.csv (300 valid + 15 null warehouse rows)")
 print(f"NOTE: inventory_{{today}}.csv intentionally absent — simulates WMS delivery delay")
 
 print("Volume seeding complete.")

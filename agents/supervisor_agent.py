@@ -402,16 +402,14 @@ class SupervisorAgent:
     def _fan_out_rca(self, state: SupervisorState):
         """Dispatch one Send per failed job using the LangGraph Send API (Option 3 — Parallel RCA).
 
-        For Groq: caps parallelism via RCA_MAX_PARALLEL (default 2) to stay within TPM limits.
-        For Databricks/Ollama: runs all jobs in parallel with no cap.
+        All jobs are dispatched in parallel. Rate limiting is handled by LLM_THROTTLE_SECONDS
+        in the RCA agent, not by limiting parallelism here.
         """
         failed_jobs = state.get("failed_jobs", [])
         if not failed_jobs:
             return END
 
-        # Cap parallelism — configurable via RCA_MAX_PARALLEL in .env
-        # Set to a low number (e.g. 2) for Groq free tier, higher for Databricks
-        jobs_to_run = failed_jobs[:Config.RCA_MAX_PARALLEL]
+        print(f"[Supervisor] Dispatching RCA for {len(failed_jobs)} job(s) in parallel")
 
         return [
             Send("rca_subgraph", {
@@ -421,13 +419,13 @@ class SupervisorAgent:
                 "rca_eval_pending": [],
                 "rca_eval_done":    [],
             })
-            for job in jobs_to_run
+            for job in failed_jobs
         ]
 
     def _route_after_evaluator(
         self, state: SupervisorState,
     ) -> Literal["incident", "end"]:
-        """Route after evaluator fan-in. Retry loop now happens inside _rca_node."""
+        """Route after evaluator fan-in. All jobs processed — proceed to incident or end."""
         task = state.get("task", "")
         if task == "monitor_analyze_incident" and state.get("rca_results"):
             return "incident"
