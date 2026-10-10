@@ -384,19 +384,19 @@ df = spark.table(SOURCE_TABLE)
 total = df.count()
 print(f"Total records: {{total:,}}")
 
-null_count = df.filter(F.col(REQUIRED_KEY).isNull()).count()
+null_count = df.filter(F.col(REQUIRED_KEY).isNull() | (F.col(REQUIRED_KEY) == "")).count()
 null_pct = round(null_count / total * 100, 1) if total > 0 else 0
-print(f"Null {{REQUIRED_KEY}}: {{null_count}} ({{null_pct}}%)")
+print(f"Null/empty {{REQUIRED_KEY}}: {{null_count}} ({{null_pct}}%)")
 
 if not FORCE_SUCCESS and null_count > 0:
     raise Exception(
         f"DataQualityException: {{null_count}} records ({{null_pct}}%) in {{SOURCE_TABLE}} "
-        f"have null {{REQUIRED_KEY}}. Required as grain key for {{TARGET_TABLE}}. "
+        f"have null/empty {{REQUIRED_KEY}}. Required as grain key for {{TARGET_TABLE}}. "
         f"Null grain key causes incorrect aggregations and duplicate rows. "
         f"Aborting to protect data integrity of {{TARGET_TABLE}}."
     )
 
-df_agg = df.filter(F.col(REQUIRED_KEY).isNotNull()) \\
+df_agg = df.filter(F.col(REQUIRED_KEY).isNotNull() & (F.col(REQUIRED_KEY) != "")) \\
     .groupBy("warehouse_id", "load_date") \\
     .agg(
         F.sum("quantity").alias("total_quantity"),
