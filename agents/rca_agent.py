@@ -106,9 +106,13 @@ class RCAAgent:
                 print(f"[{self.name}]   DAB context: {'found' if dab_ctx else 'not found'}")
 
                 # Get UC lineage (runtime history + downstream impact)
+                # Pass source/target table hints from DAB so we can fallback
+                # to table-name query if job was recreated (new job_id)
                 uc_ctx  = self.uc_fetcher.get_lineage_context(
                     job_name=job_name,
                     job_id=job_id,
+                    source_table=dab_ctx.get("source_table"),
+                    target_table=dab_ctx.get("target_table"),
                 )
                 uc_text = self.uc_fetcher.format_for_prompt(uc_ctx)
                 print(
