@@ -498,6 +498,19 @@ RAW_SEED_DML = [
         CURRENT_DATE()                                                AS load_date
     FROM (SELECT EXPLODE(SEQUENCE(1, 1000)) AS id)""",
 
+    # inventory_raw — ~5% rows with null warehouse_id
+    # These flow through etl_raw_to_cleansed_inventory into cleansed.inventory_daily
+    # and trigger the DataQualityException in etl_cleansed_to_conformed_inventory
+    f"""INSERT INTO {CATALOG}.{SCHEMA_RAW}.inventory_raw
+    SELECT
+        CONCAT('INV-NULL-', LPAD(CAST(id AS STRING), 4, '0'))        AS inventory_id,
+        NULL                                                           AS warehouse_id,
+        CONCAT('SKU-', LPAD(CAST((id % 200) + 1 AS STRING), 4,'0'))  AS sku,
+        CAST(id * 5 AS BIGINT)                                         AS quantity,
+        ROUND(CAST(id * 1.5 AS DOUBLE), 2)                            AS unit_value,
+        CURRENT_DATE()                                                 AS load_date
+    FROM (SELECT EXPLODE(SEQUENCE(1, 50)) AS id)""",
+
     # sales_raw — 2000 rows
     f"""INSERT INTO {CATALOG}.{SCHEMA_RAW}.sales_raw
     SELECT
@@ -525,30 +538,8 @@ RAW_SEED_DML = [
         CASE WHEN id % 3 = 0 THEN 'GBP' WHEN id % 3 = 1 THEN 'EUR' ELSE 'EUR' END AS currency
     FROM (SELECT EXPLODE(SEQUENCE(1, 300)) AS id)""",
 
-    # inventory_daily (cleansed layer) — 500 rows + some with null warehouse_id
-    # The null warehouse_id rows will trigger the DataQualityException in conformed job
-    f"""INSERT INTO {CATALOG}.{SCHEMA_CL}.inventory_daily
-    SELECT
-        CONCAT('INV-', LPAD(CAST(id AS STRING), 6, '0'))            AS inventory_id,
-        CONCAT('WH-', CAST((id % 5) + 1 AS STRING))                 AS warehouse_id,
-        CONCAT('SKU-', LPAD(CAST((id % 200) + 1 AS STRING),4,'0'))  AS sku,
-        CAST(id * 3 + 10 AS BIGINT)                                  AS quantity,
-        ROUND(CAST(id * 0.75 + 5.0 AS DOUBLE), 2)                   AS unit_value,
-        CURRENT_DATE()                                                AS load_date,
-        CURRENT_TIMESTAMP()                                           AS _ingested_at
-    FROM (SELECT EXPLODE(SEQUENCE(1, 500)) AS id)""",
-
-    # Insert ~5% rows with null warehouse_id to trigger DataQualityException
-    f"""INSERT INTO {CATALOG}.{SCHEMA_CL}.inventory_daily
-    SELECT
-        CONCAT('INV-NULL-', LPAD(CAST(id AS STRING), 4, '0'))        AS inventory_id,
-        NULL                                                           AS warehouse_id,
-        CONCAT('SKU-', LPAD(CAST((id % 200) + 1 AS STRING),4,'0'))   AS sku,
-        CAST(id * 5 AS BIGINT)                                         AS quantity,
-        ROUND(CAST(id * 1.5 AS DOUBLE), 2)                            AS unit_value,
-        CURRENT_DATE()                                                 AS load_date,
-        CURRENT_TIMESTAMP()                                            AS _ingested_at
-    FROM (SELECT EXPLODE(SEQUENCE(1, 25)) AS id)""",
+    # inventory_daily is written by etl_raw_to_cleansed_inventory job (not seeded here)
+    # The null warehouse_id records come from inventory_raw and flow through the cleansed job
 ]
 
 
