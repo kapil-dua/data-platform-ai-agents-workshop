@@ -746,67 +746,6 @@ def main() -> None:
             target = dml.split("INSERT INTO")[1].strip().split()[0]
             print(f"  ✅ {target} — seeded")
 
-    # ── Step 3.5: Seed DBFS files ──────────────────────────────────────────
-    print("\n━" * 65)
-    print("Step 3.5 — Seeding UC Volume files (inventory CSV, revenue CSV)")
-    print("━" * 65)
-
-    # Upload and run a quick setup notebook that writes CSVs to DBFS
-    volume_setup_nb = f"{NOTEBOOK_BASE}/_volume_setup"
-    volume_setup_code = textwrap.dedent(f"""\
-# Databricks notebook source
-# Setup: write sample CSV files to DBFS for workshop demo
-
-from datetime import datetime, timedelta, timezone
-
-yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
-
-# ── Inventory CSV (yesterday's file — for etl_raw_to_cleansed_inventory to succeed)
-dbutils.fs.mkdirs("/Volumes/demo_etl/raw/landing/inventory/daily")
-dbutils.fs.mkdirs("/Volumes/demo_etl/raw/landing/inventory/archive")
-dbutils.fs.mkdirs("/Volumes/demo_etl/raw/landing/finance/revenue")
-
-inventory_rows = "inventory_id,warehouse_id,sku,quantity,unit_value,load_date\\n"
-inventory_rows += "\\n".join(
-    f"INV-{{i:06d}},WH-{{(i%5)+1}},SKU-{{(i%200)+1:04d}},{{i*3+10}},{{round(i*0.75+5,2)}},{{yesterday}}"
-    for i in range(1, 201)
-)
-# Add ~5% rows with empty warehouse_id — these trigger DataQualityException
-# in etl_cleansed_to_conformed_inventory (null grain key check)
-inventory_rows += "\\n" + "\\n".join(
-    f"INV-NULL-{{i:04d}},,SKU-{{(i%200)+1:04d}},{{i*5}},{{round(i*1.5,2)}},{{yesterday}}"
-    for i in range(1, 11)
-)
-dbutils.fs.put(f"/Volumes/demo_etl/raw/landing/inventory/daily/inventory_{{yesterday}}.csv", inventory_rows, overwrite=True)
-print(f"Written: /Volumes/demo_etl/raw/landing/inventory/daily/inventory_{{yesterday}}.csv (200 + 10 null warehouse rows)")
-
-# ── Revenue CSV (YYYYMMDD format — causes etl_cleansed_to_conformed_revenue to fail)
-today_nodash = datetime.now(timezone.utc).strftime("%Y%m%d")
-revenue_rows = "revenue_id,region,product_line,gross_revenue,net_revenue,export_date\\n"
-revenue_rows += "\\n".join(
-    f"REV-{{i:05d}},{{['UK','DE','SI','AT'][i%4]}},{{['Bus','Rail','Coach'][i%3]}},{{i*150.0+500}},{{i*120.0+400}},{{datetime.now(timezone.utc).strftime('%Y-%m-%d')}}"
-    for i in range(1, 51)
-)
-dbutils.fs.put(f"/Volumes/demo_etl/raw/landing/finance/revenue/revenue_export_{{today_nodash}}.csv", revenue_rows, overwrite=True)
-print(f"Written: /Volumes/demo_etl/raw/landing/finance/revenue/revenue_export_{{today_nodash}}.csv (50 rows, YYYYMMDD format)")
-print("Volume seeding complete.")
-""")
-    _upload_notebook(client, volume_setup_nb, volume_setup_code)
-    volume_job_id = None
-    for existing in list(client.jobs.list(name="_volume_setup")):
-        client.jobs.delete(job_id=existing.job_id)
-    volume_job = client.jobs.create(
-        name="_volume_setup",
-        tasks=[jobs_sdk.Task(
-            task_key="main",
-            notebook_task=jobs_sdk.NotebookTask(notebook_path=volume_setup_nb),
-        )],
-    )
-    volume_run = client.jobs.run_now(job_id=volume_job.job_id)
-    _wait_for_run(client, volume_run.run_id, "_volume_setup")
-    client.jobs.delete(job_id=volume_job.job_id)  # cleanup helper job
-    print("  ✅ Volume files seeded")
-
     # ── Step 3.5: Seed Volume files ───────────────────────────────────────
     print("\n━" * 65)
     print("Step 3.5 — Seeding landing zone files in UC Volume")
@@ -848,8 +787,14 @@ inventory_rows += "\\n".join(
     f"INV-{{i:06d}},WH-{{(i%5)+1}},SKU-{{(i%200)+1:04d}},{{i*3+10}},{{round(i*0.75+5,2)}},{{yesterday}}"
     for i in range(1, 301)
 )
+# Add ~5% rows with empty warehouse_id — these trigger DataQualityException
+# in etl_cleansed_to_conformed_inventory (null grain key check)
+inventory_rows += "\\n" + "\\n".join(
+    f"INV-NULL-{{i:04d}},,SKU-{{(i%200)+1:04d}},{{i*5}},{{round(i*1.5,2)}},{{yesterday}}"
+    for i in range(1, 16)
+)
 dbutils.fs.put(f"{{base}}/inventory/daily/inventory_{{yesterday}}.csv", inventory_rows, overwrite=True)
-print(f"Written: {{base}}/inventory/daily/inventory_{{yesterday}}.csv (300 rows)")
+print(f"Written: {{base}}/inventory/daily/inventory_{{yesterday}}.csv (300 valid + 15 null warehouse rows)")
 print(f"NOTE: inventory_{{today}}.csv intentionally absent — simulates WMS delivery delay")
 
 print("Volume seeding complete.")
