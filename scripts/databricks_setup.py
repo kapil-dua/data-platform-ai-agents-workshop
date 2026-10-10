@@ -95,7 +95,7 @@ JOBS = [
         "archive_path":    f"/Volumes/{CATALOG}/{SCHEMA_RAW}/landing/inventory/archive/",
         "filename_pattern":"inventory_YYYY-MM-DD.csv",
         "sla":             "02:00 UTC",
-        "description":     "Reads daily inventory CSV from DBFS, validates and writes to cleansed.inventory_daily.",
+        "description":     "Reads daily inventory CSV from UC Volume landing zone, validates and writes to cleansed.inventory_daily.",
         "parameters": {
             "source_path":     f"/Volumes/{CATALOG}/{SCHEMA_RAW}/landing/inventory/daily/",
             "target_table":    f"{CATALOG}.{SCHEMA_CL}.inventory_daily",
@@ -708,7 +708,7 @@ def main() -> None:
         f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA_RAW}  COMMENT 'Raw ingestion layer'",
         f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA_CL}   COMMENT 'Cleansed / validated layer'",
         f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA_CF}   COMMENT 'Conformed / business-ready layer'",
-        f"CREATE VOLUME IF NOT EXISTS {CATALOG}.{SCHEMA_RAW}.landing COMMENT 'Landing zone for raw file drops (replaces DBFS)'",
+        f"CREATE VOLUME IF NOT EXISTS {CATALOG}.{SCHEMA_RAW}.landing COMMENT 'Landing zone for raw file drops — customers and inventory CSVs'",
     ]:
         _sql_exec(client, stmt)
         obj = stmt.split("IF NOT EXISTS")[1].strip().split()[0]
@@ -748,12 +748,12 @@ def main() -> None:
 
     # ── Step 3.5: Seed DBFS files ──────────────────────────────────────────
     print("\n━" * 65)
-    print("Step 3.5 — Seeding DBFS sample files (inventory CSV, revenue CSV)")
+    print("Step 3.5 — Seeding UC Volume files (inventory CSV, revenue CSV)")
     print("━" * 65)
 
     # Upload and run a quick setup notebook that writes CSVs to DBFS
-    dbfs_setup_nb = f"{NOTEBOOK_BASE}/_dbfs_setup"
-    dbfs_setup_code = textwrap.dedent(f"""\
+    volume_setup_nb = f"{NOTEBOOK_BASE}/_volume_setup"
+    volume_setup_code = textwrap.dedent(f"""\
 # Databricks notebook source
 # Setup: write sample CSV files to DBFS for workshop demo
 
@@ -762,17 +762,17 @@ from datetime import datetime, timedelta, timezone
 yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
 
 # ── Inventory CSV (yesterday's file — for etl_raw_to_cleansed_inventory to succeed)
-dbutils.fs.mkdirs("dbfs:/demo_etl/inventory/daily")
-dbutils.fs.mkdirs("dbfs:/demo_etl/inventory/archive")
-dbutils.fs.mkdirs("dbfs:/demo_etl/finance/revenue")
+dbutils.fs.mkdirs("/Volumes/demo_etl/raw/landing/inventory/daily")
+dbutils.fs.mkdirs("/Volumes/demo_etl/raw/landing/inventory/archive")
+dbutils.fs.mkdirs("/Volumes/demo_etl/raw/landing/finance/revenue")
 
 inventory_rows = "inventory_id,warehouse_id,sku,quantity,unit_value,load_date\\n"
 inventory_rows += "\\n".join(
     f"INV-{{i:06d}},WH-{{(i%5)+1}},SKU-{{(i%200)+1:04d}},{{i*3+10}},{{round(i*0.75+5,2)}},{{yesterday}}"
     for i in range(1, 201)
 )
-dbutils.fs.put(f"dbfs:/demo_etl/inventory/daily/inventory_{{yesterday}}.csv", inventory_rows, overwrite=True)
-print(f"Written: dbfs:/demo_etl/inventory/daily/inventory_{{yesterday}}.csv (200 rows)")
+dbutils.fs.put(f"/Volumes/demo_etl/raw/landing/inventory/daily/inventory_{{yesterday}}.csv", inventory_rows, overwrite=True)
+print(f"Written: /Volumes/demo_etl/raw/landing/inventory/daily/inventory_{{yesterday}}.csv (200 rows)")
 
 # ── Revenue CSV (YYYYMMDD format — causes etl_cleansed_to_conformed_revenue to fail)
 today_nodash = datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -781,25 +781,25 @@ revenue_rows += "\\n".join(
     f"REV-{{i:05d}},{{['UK','DE','SI','AT'][i%4]}},{{['Bus','Rail','Coach'][i%3]}},{{i*150.0+500}},{{i*120.0+400}},{{datetime.now(timezone.utc).strftime('%Y-%m-%d')}}"
     for i in range(1, 51)
 )
-dbutils.fs.put(f"dbfs:/demo_etl/finance/revenue/revenue_export_{{today_nodash}}.csv", revenue_rows, overwrite=True)
-print(f"Written: dbfs:/demo_etl/finance/revenue/revenue_export_{{today_nodash}}.csv (50 rows, YYYYMMDD format)")
-print("DBFS setup complete.")
+dbutils.fs.put(f"/Volumes/demo_etl/raw/landing/finance/revenue/revenue_export_{{today_nodash}}.csv", revenue_rows, overwrite=True)
+print(f"Written: /Volumes/demo_etl/raw/landing/finance/revenue/revenue_export_{{today_nodash}}.csv (50 rows, YYYYMMDD format)")
+print("Volume seeding complete.")
 """)
-    _upload_notebook(client, dbfs_setup_nb, dbfs_setup_code)
-    dbfs_job_id = None
-    for existing in list(client.jobs.list(name="_dbfs_setup")):
+    _upload_notebook(client, volume_setup_nb, volume_setup_code)
+    volume_job_id = None
+    for existing in list(client.jobs.list(name="_volume_setup")):
         client.jobs.delete(job_id=existing.job_id)
-    dbfs_job = client.jobs.create(
-        name="_dbfs_setup",
+    volume_job = client.jobs.create(
+        name="_volume_setup",
         tasks=[jobs_sdk.Task(
             task_key="main",
-            notebook_task=jobs_sdk.NotebookTask(notebook_path=dbfs_setup_nb),
+            notebook_task=jobs_sdk.NotebookTask(notebook_path=volume_setup_nb),
         )],
     )
-    dbfs_run = client.jobs.run_now(job_id=dbfs_job.job_id)
-    _wait_for_run(client, dbfs_run.run_id, "_dbfs_setup")
-    client.jobs.delete(job_id=dbfs_job.job_id)  # cleanup helper job
-    print("  ✅ DBFS files seeded")
+    volume_run = client.jobs.run_now(job_id=volume_job.job_id)
+    _wait_for_run(client, volume_run.run_id, "_volume_setup")
+    client.jobs.delete(job_id=volume_job.job_id)  # cleanup helper job
+    print("  ✅ Volume files seeded")
 
     # ── Step 3.5: Seed Volume files ───────────────────────────────────────
     print("\n━" * 65)
