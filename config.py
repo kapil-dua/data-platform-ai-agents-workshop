@@ -130,7 +130,7 @@ Error Message: {error_message}
 
     ## ── RCA Evaluation prompts ───────────────────────────────────────────────
 
-    _EVAL_SYSTEM_PROMPT = """You are a senior data engineering reviewer evaluating a root cause analysis (RCA) for a failed ETL job.
+    _EVAL_SYSTEM_PROMPT = """You are a fair, evidence-based senior data engineering reviewer evaluating a root cause analysis (RCA) for a failed ETL job.
 
 Score each criterion 1-10 using this scale:
 - 9-10: Exceptional, production-ready documentation

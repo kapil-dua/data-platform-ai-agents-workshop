@@ -234,7 +234,7 @@ def _render_agent_architecture():
         st.write("**Role:** Parallel RCA Dispatcher")
         st.write("- Uses LangGraph Send API to dispatch one RCA per failed job")
         st.write("- All jobs analysed simultaneously (not sequentially)")
-        st.write("- Results merged via Annotated reducer (Option 3 — Shared Memory)")
+        st.write("- Results merged via Annotated reducer (Option 2 — Shared Memory)")
     with st.expander("Worker 3 — RCA Evaluator", expanded=False):
         st.write("**Role:** Quality Gate (Evaluator-Optimizer)")
         st.write("- Scores each RCA on Clarity, Actionability, Completeness (1-10)")
