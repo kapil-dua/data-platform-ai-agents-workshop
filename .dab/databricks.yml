@@ -38,7 +38,7 @@ etl_raw_to_cleansed_customers:
 
 etl_raw_to_cleansed_inventory:
   name: etl_raw_to_cleansed_inventory
-  description: "Reads daily inventory CSV from DBFS, validates and writes to cleansed.inventory_daily."
+  description: "Reads daily inventory CSV from UC Volume landing zone, validates and writes to cleansed.inventory_daily."
   schedule:
     quartz_cron_expression: "0 0 2 * * ?"
     timezone_id: UTC

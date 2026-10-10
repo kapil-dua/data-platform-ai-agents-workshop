@@ -115,8 +115,6 @@ class SupervisorState(TypedDict):
     rca_eval_done:    Annotated[list[dict[str, Any]], _replace_reducer]
     # Per-Send isolated job list — only the job(s) in this parallel branch
     rca_current_jobs: Annotated[list[dict[str, Any]], _replace_reducer]
-    # Batching control — track which jobs have been processed (for RCA_MAX_PARALLEL batching)
-    rca_processed_job_ids: Annotated[set[str], lambda a, b: a | b]  # union reducer
 
     # List fields — auto-appended by each node via operator.add
     failed_jobs:      Annotated[list[dict[str, Any]], operator.add]
@@ -212,7 +210,7 @@ class SupervisorAgent:
 
         workflow.add_conditional_edges(
             "rca_evaluator", self._route_after_evaluator,
-            {"rca_fan_out": "rca_fan_out", "incident": "incident", "end": END},
+            {"incident": "incident", "end": END},
         )
 
         workflow.add_edge("incident", END)
@@ -404,30 +402,14 @@ class SupervisorAgent:
     def _fan_out_rca(self, state: SupervisorState):
         """Dispatch one Send per failed job using the LangGraph Send API (Option 4 — Parallel RCA).
 
-        Batching: processes RCA_MAX_PARALLEL jobs at a time. After fan-in, if more jobs
-        remain unprocessed, routes back to rca_fan_out for the next batch.
+        All jobs are dispatched in parallel. Rate limiting is handled by LLM_THROTTLE_SECONDS
+        in the RCA agent, not by limiting parallelism here.
         """
         failed_jobs = state.get("failed_jobs", [])
         if not failed_jobs:
             return END
 
-        # Determine which jobs still need processing
-        processed_ids = state.get("rca_processed_job_ids") or set()
-        remaining_jobs = [
-            job for job in failed_jobs
-            if str(job.get("job_id", "")) not in processed_ids
-        ]
-        
-        if not remaining_jobs:
-            return END  # All jobs processed — proceed to incident
-        
-        # Take next batch
-        max_parallel = Config.RCA_MAX_PARALLEL
-        batch = remaining_jobs[:max_parallel]
-        
-        batch_num = (len(processed_ids) // max_parallel) + 1
-        total_batches = (len(failed_jobs) + max_parallel - 1) // max_parallel
-        print(f"[Supervisor] RCA batch {batch_num}/{total_batches}: processing {len(batch)} job(s) (max_parallel={max_parallel})")
+        print(f"[Supervisor] Dispatching RCA for {len(failed_jobs)} job(s) in parallel")
 
         return [
             Send("rca_subgraph", {
@@ -436,31 +418,15 @@ class SupervisorAgent:
                 "rca_current_jobs": [job],
                 "rca_eval_pending": [],
                 "rca_eval_done":    [],
-                # Mark this job as being processed
-                "rca_processed_job_ids": processed_ids | {str(job.get("job_id", ""))},
             })
-            for job in batch
+            for job in failed_jobs
         ]
 
     def _route_after_evaluator(
         self, state: SupervisorState,
-    ) -> Literal["rca_fan_out", "incident", "end"]:
-        """Route after evaluator fan-in. 
-        
-        If more jobs remain unprocessed, loops back to rca_fan_out for the next batch.
-        Otherwise proceeds to incident creation.
-        """
+    ) -> Literal["incident", "end"]:
+        """Route after evaluator fan-in. All jobs processed — proceed to incident or end."""
         task = state.get("task", "")
-        
-        # Check if more jobs need processing (batching)
-        failed_jobs = state.get("failed_jobs", [])
-        processed_ids = state.get("rca_processed_job_ids") or set()
-        remaining = [j for j in failed_jobs if str(j.get("job_id", "")) not in processed_ids]
-        
-        if remaining:
-            print(f"[Supervisor] {len(remaining)} job(s) remaining — looping back for next batch")
-            return "rca_fan_out"
-        
         if task == "monitor_analyze_incident" and state.get("rca_results"):
             return "incident"
         return "end"
@@ -677,7 +643,6 @@ class SupervisorAgent:
             "rca_eval_pending": [],
             "rca_eval_done":    [],
             "rca_current_jobs": [],
-            "rca_processed_job_ids": set(),  # tracks which jobs have been RCA'd (for batching)
             "incident_results": [],
             "agent_results":    [],
             "execution_log":    [],
