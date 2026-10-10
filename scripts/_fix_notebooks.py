@@ -79,3 +79,62 @@ client.workspace.import_(
     format=ImportFormat.SOURCE,
 )
 print('Uploaded customers notebook successfully')
+
+# ── Re-seed inventory Volume CSV with null warehouse_id rows ──────────────────
+print('Re-seeding inventory Volume CSV with null warehouse_id rows...')
+
+reseed = r"""# Databricks notebook source
+from datetime import datetime, timedelta, timezone
+
+yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+path = f"/Volumes/demo_etl/raw/landing/inventory/daily/inventory_{yesterday}.csv"
+
+rows = "inventory_id,warehouse_id,sku,quantity,unit_value,load_date\n"
+rows += "\n".join(
+    f"INV-{i:06d},WH-{(i%5)+1},SKU-{(i%200)+1:04d},{i*3+10},{round(i*0.75+5,2)},{yesterday}"
+    for i in range(1, 201)
+)
+# 10 rows with null warehouse_id (~5%) — trigger DataQualityException in conformed job
+rows += "\n" + "\n".join(
+    f"INV-NULL-{i:04d},,SKU-{(i%200)+1:04d},{i*5},{round(i*1.5,2)},{yesterday}"
+    for i in range(1, 11)
+)
+
+dbutils.fs.put(path, rows, overwrite=True)
+print(f"Written: {path} (200 valid + 10 null warehouse_id rows)")
+
+# Trigger etl_raw_to_cleansed_inventory to regenerate inventory_daily with nulls
+print("Now trigger etl_raw_to_cleansed_inventory to propagate nulls to cleansed layer")
+"""
+
+from databricks.sdk.service import jobs as jobs_sdk
+reseed_nb = '/Shared/demo_etl/_reseed_volume'
+encoded = base64.b64encode(reseed.encode()).decode()
+client.workspace.import_(path=reseed_nb, language=Language.PYTHON, content=encoded, overwrite=True, format=ImportFormat.SOURCE)
+
+for existing in list(client.jobs.list(name='_reseed_volume')):
+    client.jobs.delete(job_id=existing.job_id)
+reseed_job = client.jobs.create(
+    name='_reseed_volume',
+    tasks=[jobs_sdk.Task(task_key='main', notebook_task=jobs_sdk.NotebookTask(notebook_path=reseed_nb))]
+)
+import time
+reseed_run = client.jobs.run_now(job_id=reseed_job.job_id)
+run_id = reseed_run.run_id
+print(f'Volume reseed triggered (run_id={run_id})...')
+while True:
+    time.sleep(8)
+    details = client.jobs.get_run(run_id=run_id)
+    lc = getattr(details.state.life_cycle_state, 'value', str(details.state.life_cycle_state))
+    if lc in {'TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'}:
+        rs = getattr(details.state.result_state, 'value', str(details.state.result_state))
+        print(f'Volume reseed: {rs}')
+        break
+    print('.', end='', flush=True)
+client.jobs.delete(job_id=reseed_job.job_id)
+
+print()
+print('Done. Now run etl_raw_to_cleansed_inventory to propagate nulls to inventory_daily,')
+print('then etl_cleansed_to_conformed_inventory should fail with DataQualityException.')
+print('Or just re-run the full setup script.')
+

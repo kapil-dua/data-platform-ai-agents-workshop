@@ -771,8 +771,14 @@ inventory_rows += "\\n".join(
     f"INV-{{i:06d}},WH-{{(i%5)+1}},SKU-{{(i%200)+1:04d}},{{i*3+10}},{{round(i*0.75+5,2)}},{{yesterday}}"
     for i in range(1, 201)
 )
+# Add ~5% rows with empty warehouse_id — these trigger DataQualityException
+# in etl_cleansed_to_conformed_inventory (null grain key check)
+inventory_rows += "\\n" + "\\n".join(
+    f"INV-NULL-{{i:04d}},,SKU-{{(i%200)+1:04d}},{{i*5}},{{round(i*1.5,2)}},{{yesterday}}"
+    for i in range(1, 11)
+)
 dbutils.fs.put(f"/Volumes/demo_etl/raw/landing/inventory/daily/inventory_{{yesterday}}.csv", inventory_rows, overwrite=True)
-print(f"Written: /Volumes/demo_etl/raw/landing/inventory/daily/inventory_{{yesterday}}.csv (200 rows)")
+print(f"Written: /Volumes/demo_etl/raw/landing/inventory/daily/inventory_{{yesterday}}.csv (200 + 10 null warehouse rows)")
 
 # ── Revenue CSV (YYYYMMDD format — causes etl_cleansed_to_conformed_revenue to fail)
 today_nodash = datetime.now(timezone.utc).strftime("%Y%m%d")
