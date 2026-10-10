@@ -403,15 +403,19 @@ class SupervisorAgent:
         """Dispatch one Send per failed job using the LangGraph Send API (Option 4 — Parallel RCA).
 
         For Groq: caps parallelism via RCA_MAX_PARALLEL (default 2) to stay within TPM limits.
-        For Databricks/Ollama: runs all jobs in parallel with no cap.
+        For Databricks/Ollama: set RCA_MAX_PARALLEL higher (e.g. 10) to run all jobs in parallel.
         """
         failed_jobs = state.get("failed_jobs", [])
         if not failed_jobs:
             return END
 
         # Cap parallelism — configurable via RCA_MAX_PARALLEL in .env
-        # Set to a low number (e.g. 2) for Groq free tier, higher for Databricks
-        jobs_to_run = failed_jobs[:Config.RCA_MAX_PARALLEL]
+        max_parallel = Config.RCA_MAX_PARALLEL
+        jobs_to_run = failed_jobs[:max_parallel]
+        
+        if len(failed_jobs) > max_parallel:
+            skipped = len(failed_jobs) - max_parallel
+            print(f"[Supervisor] ⚠️  RCA_MAX_PARALLEL={max_parallel} — processing {max_parallel} jobs, skipping {skipped}. Increase RCA_MAX_PARALLEL in .env to process all.")
 
         return [
             Send("rca_subgraph", {
